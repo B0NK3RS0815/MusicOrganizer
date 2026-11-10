@@ -24,8 +24,11 @@ jobs:
         include:
           - os: windows-latest
             name: Windows-x64
-          - os: macos-15            # Apple Silicon (M1–M4), macOS Sequoia
-            name: macOS-arm64
+          # Apple-Chip-Build (macos-15, name: macOS-arm64) vorerst deaktiviert: GitHub hatte
+          # am 09./10.11.2026 sechsmal keinen arm64-Runner frei. Die Intel-Version läuft per
+          # Rosetta auch auf Apple-Chip-Macs. Zum Reaktivieren hier wieder eintragen:
+          #   - os: macos-15
+          #     name: macOS-arm64
           - os: macos-15-intel      # Intel-Macs
             name: macOS-x86_64
     runs-on: ${{ matrix.os }}
@@ -127,7 +130,7 @@ jobs:
           | System | Datei |
           |---|---|
           | **Windows 10/11 (64 Bit)** | `…-Windows-x64-Setup.exe` (Installer, empfohlen) oder `…-Windows-x64-portable.zip` |
-          | **Mac mit Apple-Chip (M1–M4)** | `…-macOS-arm64.dmg` (falls vorhanden – sonst läuft die Intel-Version per Rosetta) |
+          | **Mac mit Apple-Chip (M1–M4)** | `…-macOS-x86_64.dmg` (läuft per Rosetta) |
           | **Mac mit Intel-Prozessor** | `…-macOS-x86_64.dmg` |
 
           ### Erster Start

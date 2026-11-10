@@ -47,8 +47,8 @@ python -m mog
 1. Projekt in ein GitHub-Repository hochladen.
 2. Unter **Actions → Build MusicOrganizer → Run workflow** starten – oder ein Tag `v0.1.0` pushen.
 3. Nach ca. 10 Minuten liegen unter dem Lauf die Downloads bereit:
-   - `MusicOrganizer-0.1.0-Windows-x64-Setup.exe` (Installer) + portable ZIP
-   - `MusicOrganizer-0.1.0-macOS-arm64.dmg` (M1–M4) und `…-macOS-x86_64.dmg` (Intel)
+   - `MusicOrganizer-<Version>-Windows-x64-Setup.exe` (Installer) + portable ZIP
+   - `MusicOrganizer-<Version>-macOS-x86_64.dmg` (Intel; läuft per Rosetta auch auf Macs mit Apple-Chip M1–M4 – ein eigener Apple-Chip-Build ist vorerst deaktiviert, siehe `.github/workflows/build.yml`)
 
 Bei einem Tag `v…` wird automatisch ein GitHub-Release mit allen Dateien erstellt.
 
