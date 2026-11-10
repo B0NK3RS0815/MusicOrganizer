@@ -1,0 +1,147 @@
+name: Build MusicOrganizer
+
+on:
+  push:
+    tags: ["v*"]
+    branches: [main]
+    # Nur bauen, wenn sich am Programm etwas ändert (nicht bei reinen README-Änderungen)
+    paths:
+      - "mog/**"
+      - "packaging/**"
+      - "tools/**"
+      - "requirements*.txt"
+      - ".github/workflows/**"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            name: Windows-x64
+          - os: macos-15            # Apple Silicon (M1–M4), macOS Sequoia
+            name: macOS-arm64
+          - os: macos-15-intel      # Intel-Macs
+            name: macOS-x86_64
+    runs-on: ${{ matrix.os }}
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Abhängigkeiten installieren
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-build.txt
+
+      - name: fpcalc (Chromaprint) laden
+        run: python tools/fetch_fpcalc.py
+
+      - name: ffmpeg prüfen
+        shell: bash
+        run: |
+          FF=$(python -c "import imageio_ffmpeg; print(imageio_ffmpeg.get_ffmpeg_exe())")
+          echo "ffmpeg: $FF"
+          "$FF" -hide_banner -encoders | grep -E "libmp3lame|flac|aac|alac" || echo "::warning::Encoder unvollständig"
+
+      - name: App bauen (PyInstaller)
+        run: pyinstaller packaging/mog.spec --noconfirm --clean
+
+      # ---------- Windows ----------
+      - name: Installer erstellen (Inno Setup)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if (-not (Get-Command iscc -ErrorAction SilentlyContinue)) { choco install innosetup -y --no-progress }
+          $iscc = (Get-Command iscc -ErrorAction SilentlyContinue).Source
+          if (-not $iscc) { $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" }
+          $ver = python -c "import mog; print(mog.__version__)"
+          & $iscc "/DAppVersion=$ver" packaging\mog_installer.iss
+          Compress-Archive -Path dist\MusicOrganizer\* -DestinationPath "dist\MusicOrganizer-$ver-Windows-x64-portable.zip"
+
+      # ---------- macOS ----------
+      - name: Signieren & DMG erstellen
+        if: runner.os == 'macOS'
+        run: |
+          codesign --force --deep --sign - dist/MusicOrganizer.app
+          VER=$(python -c "import mog; print(mog.__version__)")
+          STAGE=$(mktemp -d)
+          cp -R dist/MusicOrganizer.app "$STAGE/"
+          ln -s /Applications "$STAGE/Programme"
+          hdiutil create -volname MusicOrganizer -srcfolder "$STAGE" -ov -format UDZO \
+            "dist/MusicOrganizer-${VER}-${{ matrix.name }}.dmg"
+
+      - name: Artefakte hochladen
+        uses: actions/upload-artifact@v7
+        with:
+          name: MusicOrganizer-${{ matrix.name }}
+          path: |
+            dist/*.exe
+            dist/*.zip
+            dist/*.dmg
+          if-no-files-found: error
+
+  # Erstellt/aktualisiert eine Release-Seite mit allen Downloads.
+  # Auch wenn ein Betriebssystem fehlschlägt, werden die erfolgreichen Builds veröffentlicht.
+  release:
+    needs: build
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Version lesen
+        id: ver
+        run: |
+          VER=$(python3 -c "import re; print(re.search(r'__version__ = \"(.+?)\"', open('mog/__init__.py').read()).group(1))")
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+
+      - name: Release-Text erstellen
+        run: |
+          python3 - <<'PY'
+          import re
+          ver = "${{ steps.ver.outputs.version }}"
+          log = open("CHANGELOG.md", encoding="utf-8").read()
+          sections = re.findall(r"^## (\S+)\s*\n(.*?)(?=^## |\Z)", log, re.S | re.M)
+          notes = next((t.strip() for v, t in sections if v == ver), "")
+          older = "\n\n".join(f"### {v}\n{t.strip()}" for v, t in sections if v != ver)
+          if older:
+              notes += "\n\n## Frühere Versionen\n\n" + older
+          body = f"""## Neu in {ver}
+          {notes}
+
+          ## Downloads
+          | System | Datei |
+          |---|---|
+          | **Windows 10/11 (64 Bit)** | `…-Windows-x64-Setup.exe` (Installer, empfohlen) oder `…-Windows-x64-portable.zip` |
+          | **Mac mit Apple-Chip (M1–M4)** | `…-macOS-arm64.dmg` (falls vorhanden – sonst läuft die Intel-Version per Rosetta) |
+          | **Mac mit Intel-Prozessor** | `…-macOS-x86_64.dmg` |
+
+          ### Erster Start
+          - **Windows:** SmartScreen-Warnung → „Weitere Informationen“ → „Trotzdem ausführen“.
+          - **macOS:** DMG öffnen, App in „Programme“ ziehen. Beim ersten Start: Systemeinstellungen → Datenschutz & Sicherheit → „Dennoch öffnen“.
+          """
+          open("release_body.md", "w", encoding="utf-8").write("\n".join(l[10:] if l.startswith(" " * 10) else l for l in body.splitlines()))
+          PY
+
+      - uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ github.ref_type == 'tag' && github.ref_name || format('v{0}', steps.ver.outputs.version) }}
+          target_commitish: ${{ github.sha }}
+          name: MusicOrganizer ${{ steps.ver.outputs.version }}
+          fail_on_unmatched_files: false
+          files: artifacts/**/*
+          body_path: release_body.md

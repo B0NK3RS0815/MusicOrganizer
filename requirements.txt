@@ -1,0 +1,7 @@
+# Laufzeit-Abhängigkeiten von MusicOrganizer (MOG)
+PySide6>=6.7,<7          # Oberfläche + Player (Qt Multimedia mit FFmpeg-Backend)
+mutagen>=1.47            # Tags lesen/schreiben (alle gängigen Formate)
+numpy>=1.26              # BPM-Analyse, Fingerabdruck-Vergleich
+requests>=2.31           # Online-Datenbanken
+Send2Trash>=1.8          # Löschen in den Papierkorb (Windows & macOS)
+imageio-ffmpeg>=0.5      # mitgeliefertes ffmpeg für Konvertierung

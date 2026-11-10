@@ -1,0 +1,2 @@
+# Nur zum Bauen der .exe / .app nötig
+pyinstaller>=6.10
