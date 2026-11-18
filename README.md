@@ -4,7 +4,7 @@ Musikarchiv-Verwaltung für DJs – für **Windows 10/11 x64** und **macOS Sequo
 
 ![MOG Logo](mog/resources/mog_icon_256.png)
 
-## Funktionen (Version 0.3)
+## Funktionen (Version 1.0)
 
 Alle Änderungen je Version: siehe [CHANGELOG.md](CHANGELOG.md).
 

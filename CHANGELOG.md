@@ -1,6 +1,6 @@
 # Änderungen
 
-## 0.3.0
+## 1.0.0
 - **rekordbox-Anbindung** (Knopf „rekordbox“, Strg+R) in zwei umschaltbaren Varianten:
   - **XML (offiziell, sicher):** rekordbox-XML öffnen oder neu anlegen, bearbeiten und speichern. Einlesen in rekordbox über Einstellungen → Erweitert → Datenbank → „rekordbox xml“. Cue-Punkte, Beatgrid und alle anderen Inhalte der Datei bleiben erhalten.
   - **Datenbank (direkt, inoffiziell):** bearbeitet rekordbox' eigene Bibliothek (`master.db`, rekordbox 6/7). rekordbox muss beim Speichern geschlossen sein; vor jedem Speichern legt MOG eine Sicherung an (die letzten 10 werden aufbewahrt).
