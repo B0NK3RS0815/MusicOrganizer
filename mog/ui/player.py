@@ -11,6 +11,7 @@ import logging
 from mog.core.track import format_duration
 
 from .icons import icon, placeholder_cover
+from .waveform_widget import WaveformWidget
 from .theme import C
 
 log = logging.getLogger("mog.player")
@@ -54,8 +55,12 @@ class PlayerBar(QWidget):
         super().__init__(parent)
         self.setObjectName("PlayerBar")
         self.setAttribute(Qt.WA_StyledBackground, True)
-        self.setFixedHeight(72)
+        self.setFixedHeight(80)
         self.track = None
+        self._wave_token = 0
+        self._wave_threads = []
+        self.ffmpeg = None
+        self.wave_cache = None
         self._seeking = False
 
         lay = QHBoxLayout(self)
@@ -69,8 +74,8 @@ class PlayerBar(QWidget):
             b.setFixedSize(size, size)
             b.setToolTip(tip)
             b.setAutoRaise(True)
-            b.setStyleSheet(f"QToolButton {{ border-radius: {size // 2}px; }}"
-                            f"QToolButton:hover {{ background: {C['panel2']}; }}")
+            b.setProperty("icon_name", name)
+            b.setProperty("round", size // 2)
             return b
 
         self.btn_prev = tbtn("prev", "Vorheriger Titel")
@@ -79,10 +84,7 @@ class PlayerBar(QWidget):
         self.btn_play.setIconSize(QSize(22, 22))
         self.btn_play.setFixedSize(44, 44)
         self.btn_play.setToolTip("Abspielen / Pause (Leertaste)")
-        self.btn_play.setStyleSheet(
-            "QToolButton { border-radius: 22px; background: qlineargradient(x1:0,y1:0,x2:1,y2:1,"
-            f"stop:0 {C['accent2']}, stop:0.6 {C['accent']}, stop:1 {C['accent3']}); }}"
-            f"QToolButton:hover {{ background: {C['accent']}; }}")
+
         self.btn_stop = tbtn("stop", "Stopp")
         self.btn_next = tbtn("next", "Nächster Titel")
         for b in (self.btn_prev, self.btn_play, self.btn_stop, self.btn_next):
@@ -115,9 +117,9 @@ class PlayerBar(QWidget):
         self.lbl_pos.setObjectName("Muted")
         self.lbl_pos.setFixedWidth(46)
         self.lbl_pos.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        self.seek = ClickSlider(Qt.Horizontal)
+        self.seek = WaveformWidget()
         self.seek.setRange(0, 0)
-        self.seek.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.seek.setToolTip("Klicken oder ziehen, um zu springen")
         self.lbl_dur = QLabel("0:00")
         self.lbl_dur.setObjectName("Muted")
         self.lbl_dur.setFixedWidth(46)
@@ -133,6 +135,7 @@ class PlayerBar(QWidget):
         self.vol.setFixedWidth(100)
         lay.addWidget(self.btn_mute)
         lay.addWidget(self.vol)
+        self.retheme()
 
         self.player = None   # wird beim ersten Abspielen erzeugt (schnellerer Start)
         self.audio = None
@@ -196,7 +199,60 @@ class PlayerBar(QWidget):
             self.cover.setPixmap(placeholder_cover(48))
         self.player.setSource(QUrl.fromLocalFile(track.path))
         self.player.play()
+        self._load_waveform(track)
         self.now_playing.emit(track)
+
+    # --- Wellenform ------------------------------------------------------------
+    def configure_waveform(self, ffmpeg, cache):
+        self.ffmpeg = ffmpeg
+        self.wave_cache = cache
+
+    def _load_waveform(self, track):
+        self._wave_token += 1
+        token = self._wave_token
+        cached = self.wave_cache.get(track.path) if self.wave_cache else None
+        if cached is not None:
+            self.seek.set_data(cached)
+            return
+        if not self.ffmpeg:
+            self.seek.set_data(None)
+            return
+        self.seek.set_loading(True)
+        from mog.core import waveform
+        from .workers import TaskThread
+        ff, cache, path = self.ffmpeg, self.wave_cache, track.path
+
+        def job(_p, _c, _i):
+            arr = waveform.compute(ff, path)
+            if arr is not None and cache:
+                cache.put(path, arr)
+            return arr
+
+        th = TaskThread(job, self)
+        th.done.connect(lambda arr, t=token: self._waveform_ready(t, arr))
+        th.failed.connect(lambda e, t=token: self._waveform_ready(t, None))
+        th.finished.connect(lambda th=th: self._wave_threads.remove(th) if th in self._wave_threads else None)
+        self._wave_threads.append(th)
+        th.start()
+
+    def _waveform_ready(self, token, arr):
+        if token == self._wave_token:
+            self.seek.set_data(arr)
+
+    def retheme(self):
+        for b in (self.btn_prev, self.btn_stop, self.btn_next, self.btn_mute):
+            name = b.property("icon_name") or "volume"
+            b.setIcon(icon(name))
+            r = b.property("round") or 15
+            b.setStyleSheet(f"QToolButton {{ border-radius: {r}px; }}"
+                            f"QToolButton:hover {{ background: {C['panel2']}; }}")
+        self.btn_play.setStyleSheet(
+            "QToolButton { border-radius: 22px; background: qlineargradient(x1:0,y1:0,x2:1,y2:1,"
+            f"stop:0 {C['accent2']}, stop:0.6 {C['accent']}, stop:1 {C['accent3']}); }}"
+            f"QToolButton:hover {{ background: {C['accent']}; }}")
+        if self.track is None:
+            self.cover.setPixmap(placeholder_cover(48))
+        self.seek.retheme()
 
     def toggle(self):
         if not self.player:
@@ -222,6 +278,9 @@ class PlayerBar(QWidget):
             self.track = None
             self.lbl_title.setText("Kein Titel geladen")
             self.lbl_artist.setText("")
+            self._wave_token += 1
+            self.seek.set_data(None)
+            self.seek.setRange(0, 0)
             self.now_playing.emit(None)
 
     def is_playing(self):
@@ -271,12 +330,14 @@ class PlayerBar(QWidget):
             # logarithmischer Verlauf fühlt sich natürlicher an
             self.audio.setVolume((v / 100.0) ** 2)
             self.audio.setMuted(False)
+        self.btn_mute.setProperty("icon_name", "mute" if v == 0 else "volume")
         self.btn_mute.setIcon(icon("mute" if v == 0 else "volume"))
 
     def _toggle_mute(self):
         if self.audio is not None:
             m = not self.audio.isMuted()
             self.audio.setMuted(m)
+            self.btn_mute.setProperty("icon_name", "mute" if m else "volume")
             self.btn_mute.setIcon(icon("mute" if m else "volume"))
 
     def seek_relative(self, seconds):

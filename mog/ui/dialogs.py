@@ -14,6 +14,7 @@ from mog.core import encoder, fingerprint
 from mog.core.bpm import BPM_RANGES
 from mog.core.track import format_size
 
+from .theme import C
 from .icons import icon
 
 
@@ -207,7 +208,16 @@ class SettingsDialog(QDialog):
         self.cb_update.setChecked(self.s.get("update/auto"))
         gl2.addWidget(self.cb_update)
         f.addWidget(g2)
-        g3 = QGroupBox("BPM-Analyse")
+        g4 = QGroupBox("Darstellung")
+        fl4 = QFormLayout(g4)
+        from . import theme as _theme
+        self.cmb_theme = QComboBox()
+        for k, label in _theme.MODES.items():
+            self.cmb_theme.addItem(label, k)
+        self.cmb_theme.setCurrentIndex(max(0, self.cmb_theme.findData(self.s.get("ui/theme"))))
+        fl4.addRow("Farbschema:", self.cmb_theme)
+        f.addWidget(g4)
+        g3 = QGroupBox("BPM- und Tonart-Analyse")
         fl3 = QFormLayout(g3)
         self.cmb_range = QComboBox()
         self.cmb_range.addItems(list(BPM_RANGES))
@@ -216,6 +226,15 @@ class SettingsDialog(QDialog):
         self.cb_round.setChecked(self.s.get("bpm/round"))
         fl3.addRow("Tempobereich:", self.cmb_range)
         fl3.addRow("", self.cb_round)
+        from mog.core.keydetect import NOTATIONS
+        self.cmb_notation = QComboBox()
+        for k, label in NOTATIONS.items():
+            self.cmb_notation.addItem(label, k)
+        self.cmb_notation.setCurrentIndex(max(0, self.cmb_notation.findData(self.s.get("key/notation"))))
+        fl3.addRow("Tonart schreiben als:", self.cmb_notation)
+        self.cb_rbload = QCheckBox("rekordbox (zuletzt verwendete XML/Datenbank) beim Start laden")
+        self.cb_rbload.setChecked(self.s.get("rekordbox/autoload"))
+        gl2.addWidget(self.cb_rbload)
         f.addWidget(g3)
         f.addStretch()
         tabs.addTab(w, "Allgemein")
@@ -350,7 +369,7 @@ class SettingsDialog(QDialog):
         return l
 
     def _link(self, text, url):
-        l = QLabel(f'<a href="{url}" style="color:#FF4D6D;text-decoration:none">{text}</a>')
+        l = QLabel(f'<a href="{url}" style="color:{C["accent"]};text-decoration:none">{text}</a>')
         l.setObjectName("Hint")
         l.setOpenExternalLinks(True)
         return l
@@ -393,6 +412,10 @@ class SettingsDialog(QDialog):
         s.set("update/auto", self.cb_update.isChecked())
         s.set("bpm/range", self.cmb_range.currentText())
         s.set("bpm/round", self.cb_round.isChecked())
+        s.set("key/notation", self.cmb_notation.currentData())
+        s.set("rekordbox/autoload", self.cb_rbload.isChecked())
+        self.theme_changed = self.cmb_theme.currentData() != s.get("ui/theme")
+        self.new_theme = self.cmb_theme.currentData()
         s.set("tools/ffmpeg", self.ed_ff.text().strip())
         s.set("tools/fpcalc", self.ed_fp.text().strip())
         s.set("online/contact", self.ed_contact.text().strip())
@@ -409,7 +432,7 @@ class SettingsDialog(QDialog):
 class DeleteDialog(QDialog):
     """Fragt nach, bevor Dateien wirklich vom Datenträger gelöscht werden."""
 
-    def __init__(self, tracks, permanent_default, parent=None):
+    def __init__(self, tracks, permanent_default, parent=None, rb_info=None, rb_kind=""):
         super().__init__(parent)
         self.setWindowTitle("Von Datenträger löschen")
         self.setMinimumWidth(560)
@@ -437,8 +460,21 @@ class DeleteDialog(QDialog):
         hint.setObjectName("Hint")
         hint.setWordWrap(True)
         lay.addWidget(hint)
+        self.cb_rb = None
+        if rb_info:
+            in_pl = sum(1 for v in rb_info.values() if v)
+            w = QLabel(f"⚠ {len(rb_info)} der Dateien sind in rekordbox"
+                       + (f", davon {in_pl} in Playlists" if in_pl else "") + ". Ohne Anpassung zeigt rekordbox "
+                       "sie danach als „fehlende Dateien“.")
+            w.setObjectName("Warning")
+            w.setWordWrap(True)
+            lay.addWidget(w)
+            self.cb_rb = QCheckBox("Auch aus rekordbox entfernen" + (" (Sammlung und Playlists)" if rb_kind == "xml"
+                                                                      else " (aus allen Playlists)"))
+            self.cb_rb.setChecked(True)
+            lay.addWidget(self.cb_rb)
         bb = QDialogButtonBox(QDialogButtonBox.Cancel)
-        ok = QPushButton(icon("trash", "#FFB3BE"), "  Löschen")
+        ok = QPushButton(icon("trash", C["danger_text"]), "  Löschen")
         ok.setObjectName("Danger")
         bb.addButton(ok, QDialogButtonBox.AcceptRole)
         bb.accepted.connect(self.accept)
@@ -448,3 +484,7 @@ class DeleteDialog(QDialog):
     @property
     def permanent(self):
         return self.rb_perm.isChecked()
+
+    @property
+    def remove_from_rekordbox(self):
+        return bool(self.cb_rb and self.cb_rb.isChecked())

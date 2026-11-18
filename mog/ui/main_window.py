@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QFileDialog, QFrame, QGridLayo
 
 from mog import APP_NAME, __version__
 from mog.core import bpm as bpmmod, encoder, fileops, pending as pendingmod, scanner, tags as tagio
-from mog.core import updater
+from mog.core import keydetect, rekordbox as rbmod, updater, waveform
 from mog.core.formats import dialog_filter
 from mog.core.library import Library
 from mog.core.track import format_bpm, format_duration, format_size
@@ -24,10 +24,12 @@ from .icons import icon, logo_pixmap, placeholder_cover, svg_pixmap
 from .online_dialog import OnlineTagDialog
 from .player import PlayerBar
 from .rename_dialog import RenameDialog
-from .settings import Settings, db_path
+from .settings import Settings, data_dir, db_path
 from .tag_editor import TagEditor
+from . import theme
 from .theme import C
 from .track_model import COLUMNS, COL_INDEX, FormatBadgeDelegate, TrackModel, TrackRole
+from .rekordbox_dialog import RekordboxWindow
 from .update_dialog import UpdateDialog
 from .workers import ScanThread, TaskThread
 
@@ -46,7 +48,8 @@ class HeaderBar(QWidget):
         self.lay = QHBoxLayout(self)
         self.lay.setContentsMargins(16, 6, 10, 6)
         self.lay.setSpacing(1)
-        logo = QLabel()
+        self.buttons = []
+        self.logo = logo = QLabel()
         logo.setPixmap(logo_pixmap(38))
         logo.setToolTip(f"{APP_NAME} – Version {__version__}")
         self.lay.addWidget(logo)
@@ -70,7 +73,13 @@ class HeaderBar(QWidget):
             b.setMenu(menu)
             b.setPopupMode(QToolButton.InstantPopup)
         self.lay.addWidget(b)
+        self.buttons.append((b, name))
         return b
+
+    def retheme(self):
+        self.logo.setPixmap(logo_pixmap(38))
+        for b, name in self.buttons:
+            b.setIcon(icon(name, C["accent2"]) if b.property("accent") else icon(name))
 
     def separator(self):
         f = QFrame()
@@ -209,6 +218,9 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.s = Settings()
         self.db_path = db_path()
+        self.data_dir = data_dir()
+        self.rb = None
+        self.rb_window = None
         self.lib = Library(self.db_path)
         self.scan_thread = None
         self._bg = []
@@ -243,15 +255,21 @@ class MainWindow(QMainWindow):
         h.button("tag", "Tags", "Tags der markierten Titel bearbeiten (Strg+E)", self.edit_tags)
         h.button("rename", "Umbenennen", "Dateinamen der markierten Titel bearbeiten (F2)", self.rename_files)
         h.button("globe", "Online", "Tags aus Online-Datenbanken übernehmen (Strg+K)", self.open_online)
-        h.button("pulse", "BPM", "BPM der markierten Titel analysieren", self.analyze_bpm)
+        an_menu = QMenu(self)
+        an_menu.addAction(icon("pulse"), "BPM analysieren", self.analyze_bpm)
+        an_menu.addAction(icon("key"), "Tonart analysieren (Camelot)", self.analyze_key)
+        an_menu.addAction(icon("pulse"), "BPM und Tonart analysieren", lambda: self.analyze_bpm(then_key=True))
+        h.button("pulse", "Analyse", "BPM und Tonart der markierten Titel ermitteln", menu=an_menu)
         h.button("convert", "Konvertieren", "Markierte Titel mit ffmpeg umwandeln", self.open_convert)
+        h.button("rekordbox", "rekordbox", "rekordbox-Playlists bearbeiten (XML oder Datenbank) – Strg+R",
+                 lambda: self.open_rekordbox())
         h.lay.addStretch(1)
         self.search = QLineEdit()
         self.search.setObjectName("SearchField")
         self.search.setPlaceholderText("Suchen …")
         self.search.setToolTip("Sucht in Artist, Titel, Album, Genre, Label, Tonart und Dateipfad (Strg+F)")
         self.search.setClearButtonEnabled(True)
-        self.search.addAction(icon("search", C["text3"]), QLineEdit.LeadingPosition)
+        self._search_action = self.search.addAction(icon("search", C["text3"]), QLineEdit.LeadingPosition)
         self.search.setStyleSheet("QLineEdit#SearchField { padding-left: 6px; min-width: 150px; }")
         self.search.setMaximumWidth(300)
         self.search.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
@@ -261,6 +279,12 @@ class MainWindow(QMainWindow):
         h.separator()
         gear = QMenu(self)
         gear.addAction(icon("settings"), "Einstellungen …", self.open_settings)
+        look = gear.addMenu(icon("eye"), "Darstellung")
+        self._theme_actions = {}
+        for key, label in theme.MODES.items():
+            a = look.addAction(label, lambda k=key: self.set_theme(k))
+            a.setCheckable(True)
+            self._theme_actions[key] = a
         gear.addAction(icon("download"), "Nach Updates suchen …", lambda: self.check_updates(manual=True))
         gear.addAction(icon("file"), "Diagnose-Protokoll zeigen", self.show_log)
         gear.addSeparator()
@@ -365,12 +389,22 @@ class MainWindow(QMainWindow):
         for seq, slot in (("Ctrl+F", lambda: (self.search.setFocus(), self.search.selectAll())),
                           ("Ctrl+E", self.edit_tags), ("Ctrl+O", self.import_folder),
                           ("Ctrl+D", self.open_duplicates), ("Ctrl+K", self.open_online),
-                          ("F2", self.rename_files), ("Ctrl+S", lambda: self.save_pending())):
+                          ("F2", self.rename_files), ("Ctrl+S", lambda: self.save_pending()),
+                          ("Ctrl+R", lambda: self.open_rekordbox())):
             QShortcut(QKeySequence(seq), self, activated=slot)
         QShortcut(QKeySequence.Quit, self, activated=self.close)
 
         self._restore_state()
         self.player.set_device_id(self.s.get("audio/device"))
+        self.player.configure_waveform(encoder.find_ffmpeg(self.s.get("tools/ffmpeg") or None),
+                                       waveform.WaveformCache(os.path.join(self.data_dir, "waveforms.sqlite")))
+        self._sync_theme_actions()
+        try:
+            from PySide6.QtGui import QGuiApplication
+            QGuiApplication.styleHints().colorSchemeChanged.connect(
+                lambda *_: theme.current_mode() == "system" and self.set_theme("system"))
+        except Exception:
+            pass
         self._refresh_pending()
         if self.s.get("startup/load_library"):
             self.load_library()
@@ -451,7 +485,7 @@ class MainWindow(QMainWindow):
 
     def _add_view(self, parent, ic, text, key, count):
         it = QTreeWidgetItem([text, f"{count:,}".replace(",", ".") if count else ""])
-        it.setIcon(0, icon(ic, C["text2"], "#FFFFFF"))
+        it.setIcon(0, icon(ic, C["text2"]))
         it.setData(0, Qt.UserRole, key)
         it.setTextAlignment(1, Qt.AlignRight | Qt.AlignVCenter)
         it.setForeground(1, QColor(C["text3"]))
@@ -498,6 +532,7 @@ class MainWindow(QMainWindow):
         row = QHBoxLayout()
         row.addStretch()
         self.btn_load_lib = QPushButton(icon("library", "#FFFFFF"), "  Gespeicherte Bibliothek laden")
+        self.btn_load_lib.setProperty("icon_name", "library")
         self.btn_load_lib.setObjectName("Primary")
         self.btn_load_lib.setMinimumHeight(36)
         self.btn_load_lib.clicked.connect(self.load_library)
@@ -506,6 +541,7 @@ class MainWindow(QMainWindow):
                                  ("folder", "  Ordner wählen", self.import_folder),
                                  ("file", "  Dateien wählen", self.import_files)):
             b = QPushButton(icon(name), text)
+            b.setProperty("icon_name", name)
             b.setIconSize(QSize(18, 18))
             b.setMinimumHeight(36)
             b.clicked.connect(slot)
@@ -559,6 +595,8 @@ class MainWindow(QMainWindow):
         self._update_counts()
         self.statusBar().showMessage(f"Bibliothek geladen ({time.time() - t0:.1f} s)", 4000)
         QTimer.singleShot(300, self._quick_check_bg)
+        if self.s.get("rekordbox/autoload") and self.rb is None:
+            QTimer.singleShot(800, self._autoload_rekordbox)
 
     def _update_counts(self, *_):
         n_all = len(self.model.all)
@@ -632,7 +670,7 @@ class MainWindow(QMainWindow):
         b.setText(f"Speichern ({n})" if n else "Speichern")
         b.setToolTip(f"{n} Titel mit ungespeicherten Tag-Änderungen jetzt in die Dateien schreiben (Strg+S)"
                      if n else "Keine ungespeicherten Änderungen")
-        b.setIcon(icon("save", C["accent2"] if n else "#C9CAD6"))
+        b.setIcon(icon("save", C["accent2"] if n else None))
         b.setStyleSheet(f"QToolButton#HeaderButton {{ color: {C['accent2']}; }}" if n else "")
 
     def stage_changes(self, changes):
@@ -937,6 +975,18 @@ class MainWindow(QMainWindow):
         m.addAction(icon("rename"), "Dateiname bearbeiten …\tF2", self.rename_files)
         m.addAction(icon("globe"), "Tags online suchen …\tStrg+K", self.open_online)
         m.addAction(icon("pulse"), "BPM analysieren", self.analyze_bpm)
+        m.addAction(icon("key"), "Tonart analysieren", self.analyze_key)
+        rbm = m.addMenu(icon("rekordbox"), "Zu rekordbox hinzufügen")
+        if self.rb is None:
+            rbm.addAction("rekordbox öffnen …", lambda: self.open_rekordbox())
+        else:
+            rbm.addAction(icon("plus"), "Neue Playlist …", lambda: self._rb_add_to_new(ts))
+            rbm.addAction(icon("library"), "Nur zur Sammlung", lambda: self._rb_add(ts, None))
+            pls = [n for n in self.rb.playlists() if n.kind == "playlist"]
+            if pls:
+                rbm.addSeparator()
+            for n in pls[:60]:
+                rbm.addAction(n.path_name(), lambda n=n: self._rb_add(ts, n))
         m.addAction(icon("convert"), "Konvertieren …", self.open_convert)
         m.addAction(icon("duplicates"), "Duplikate in Auswahl suchen …", lambda: self.open_duplicates(ts))
         pend = [t.id for t in ts if t.id in self.model.pending]
@@ -1067,11 +1117,15 @@ class MainWindow(QMainWindow):
         if not dlg.exec() or not dlg.renames:
             return
         ok, errors, stale_all = 0, [], []
+        self._rb_moved = 0
         for t, stem in dlg.renames:
             self.player.release_file(t.path)
             success, new_path, msg = fileops.rename_file(t.path, stem)
             if success and new_path != t.path:
                 stale_all += self.lib.rename_path(t.id, new_path)
+                if self.rb is not None and self.rb.update_path(t.path, new_path):
+                    rb_moved = getattr(self, "_rb_moved", 0) + 1
+                    self._rb_moved = rb_moved
                 t.path = new_path
                 self.model.upsert([t])
                 ok += 1
@@ -1080,7 +1134,12 @@ class MainWindow(QMainWindow):
         if stale_all:
             self.model.remove_ids(stale_all)
         self._on_selection()
-        self.statusBar().showMessage(f"{ok} Datei(en) umbenannt.", 6000)
+        msg = f"{ok} Datei(en) umbenannt."
+        if self._rb_moved:
+            msg += (f" In rekordbox wurde der Pfad von {self._rb_moved} Titel(n) angepasst – "
+                    "bitte im rekordbox-Fenster speichern.")
+            self.rekordbox_changed()
+        self.statusBar().showMessage(msg, 12000)
         if errors:
             QMessageBox.warning(self, "Umbenennen", "Nicht umbenannt:\n\n" + "\n".join(errors[:15]))
 
@@ -1092,7 +1151,7 @@ class MainWindow(QMainWindow):
         dlg.staged.connect(lambda t, v, c, cs: self.stage_changes([(t, v, c, cs)]))
         dlg.exec()
 
-    def analyze_bpm(self):
+    def analyze_bpm(self, then_key=False):
         ts = [t for t in self._need_selection("BPM analysieren") if not t.missing]
         if not ts:
             return
@@ -1112,6 +1171,8 @@ class MainWindow(QMainWindow):
             overwrite = r == QMessageBox.Yes
         todo = ts if overwrite else [t for t in ts if not t.bpm]
         if not todo:
+            if then_key:
+                self.analyze_key()
             return
         lo, hi = bpmmod.BPM_RANGES.get(self.s.get("bpm/range"), (78, 155))
         rnd = self.s.get("bpm/round")
@@ -1145,6 +1206,57 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(
             f"BPM für {n} Titel ermittelt – wird beim Speichern bzw. Beenden in die Dateien geschrieben."
             + (f" {fails} ohne Ergebnis." if fails else ""), 10000)
+        if then_key:
+            self.analyze_key()
+
+    def analyze_key(self):
+        ts = [t for t in self._need_selection("Tonart analysieren") if not t.missing]
+        if not ts:
+            return
+        ff = encoder.find_ffmpeg(self.s.get("tools/ffmpeg") or None)
+        if not ff:
+            QMessageBox.warning(self, "Tonart", "ffmpeg wurde nicht gefunden (Einstellungen → Encoder).")
+            return
+        with_key = [t for t in ts if t.key]
+        overwrite = False
+        if with_key:
+            r = QMessageBox.question(self, "Tonart analysieren",
+                                     f"{len(with_key)} von {len(ts)} Titeln haben bereits eine Tonart.\n\n"
+                                     "Vorhandene Werte überschreiben?",
+                                     QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel, QMessageBox.No)
+            if r == QMessageBox.Cancel:
+                return
+            overwrite = r == QMessageBox.Yes
+        todo = ts if overwrite else [t for t in ts if not t.key]
+        if not todo:
+            return
+        notation = self.s.get("key/notation")
+        items = [(t.id, t.path, t.duration, t.display_artist, t.display_title) for t in todo]
+
+        def job(progress, cancel, _item):
+            out = []
+            for i, (tid, path, dur, a, ti) in enumerate(items, 1):
+                if cancel.is_set():
+                    break
+                progress(i - 1, len(items), f"{a} – {ti}")
+                try:
+                    mus, cam, _conf = keydetect.analyze_file(ff, path, dur)
+                    out.append((tid, keydetect.format_key(mus, cam, notation) if cam else None))
+                except Exception:
+                    out.append((tid, None))
+            progress(len(items), len(items), "")
+            return out
+
+        res = run_task(self, "Analysiere Tonart …", job)
+        if res is None:
+            return
+        changes = [(self.model.by_id[tid], {"key": key}, None, False)
+                   for tid, key in res if key and tid in self.model.by_id]
+        n = self.stage_changes(changes) if changes else 0
+        fails = len(res) - len(changes)
+        self.statusBar().showMessage(
+            f"Tonart für {n} Titel ermittelt – wird beim Speichern bzw. Beenden in die Dateien geschrieben."
+            + (f" {fails} ohne Ergebnis." if fails else ""), 10000)
 
     def open_convert(self):
         ts = self._need_selection("Konvertieren")
@@ -1170,10 +1282,45 @@ class MainWindow(QMainWindow):
         if not tracks:
             QMessageBox.information(self, "Duplikate", "Die Bibliothek ist leer.")
             return
-        dlg = DuplicatesDialog(tracks, self.s, self.db_path, self)
+        dlg = DuplicatesDialog(tracks, self.s, self.db_path, self, rb_info=self.model.rb_info)
         dlg.play_requested.connect(self.play)
         dlg.delete_requested.connect(lambda ts: dlg.remove_deleted(self._delete_tracks(ts, ask=True)))
+        dlg.move_requested.connect(lambda ts, folder: dlg.remove_deleted(self._move_tracks(ts, folder)))
         dlg.exec()
+
+    def _move_tracks(self, tracks, folder):
+        """Verschiebt Dateien in einen Ordner (z. B. aussortierte Duplikate) und nimmt sie aus der Liste.
+        Gibt die IDs der verschobenen Titel zurück."""
+        import shutil
+        roots = [r.rstrip("/\\") + os.sep for r in self.lib.roots()]
+        moved, errors = [], []
+        for t in tracks:
+            self.player.release_file(t.path)
+            root = next((r for r in roots if t.path.startswith(r)), None)
+            rel = os.path.relpath(t.path, root) if root else t.filename
+            dst = encoder.unique_path(os.path.join(folder, rel))
+            try:
+                os.makedirs(os.path.dirname(dst), exist_ok=True)
+                shutil.move(t.path, dst)
+            except OSError as e:
+                errors.append(f"{t.filename}: {e}")
+                continue
+            if self.rb is not None:
+                self.rb.update_path(t.path, dst)
+            moved.append(t.id)
+        self.lib.delete(moved)
+        self.model.remove_ids(moved)
+        self._refresh_pending()
+        self._rebuild_sidebar()
+        if self.rb is not None and moved:
+            self.rekordbox_changed()
+        msg = f"{len(moved)} Datei(en) nach „{folder}“ verschoben."
+        if self.rb is not None and moved:
+            msg += " Pfade in rekordbox angepasst – bitte im rekordbox-Fenster speichern."
+        self.statusBar().showMessage(msg, 12000)
+        if errors:
+            QMessageBox.warning(self, "Verschieben", "Nicht verschoben:\n\n" + "\n".join(errors[:15]))
+        return moved
 
     def reveal_selected(self):
         ts = self.selected_tracks()
@@ -1198,11 +1345,15 @@ class MainWindow(QMainWindow):
     def _delete_tracks(self, tracks, ask=True):
         """Löscht Dateien vom Datenträger. Gibt Liste gelöschter IDs zurück."""
         permanent = self.s.get("delete/permanent")
+        rb_remove = False
+        rb_info = self.rb.info_for_paths([t.path for t in tracks]) if self.rb is not None else {}
+        rb_info = {p: pl for p, (_inc, pl) in rb_info.items()}
         if ask:
-            dlg = DeleteDialog(tracks, permanent, self)
+            dlg = DeleteDialog(tracks, permanent, self, rb_info=rb_info, rb_kind=self.rb.kind if self.rb else "")
             if not dlg.exec():
                 return []
             permanent = dlg.permanent
+            rb_remove = dlg.remove_from_rekordbox
         for t in tracks:
             self.player.release_file(t.path)
         deleted, failed = [], []
@@ -1228,6 +1379,12 @@ class MainWindow(QMainWindow):
                 if stop:
                     fileops.remove_empty_dirs(t.path, stop)
         ids = [t.id for t in deleted]
+        if rb_remove and self.rb is not None:
+            for t in deleted:
+                rt = self.rb.track_for_path(t.path)
+                if rt is not None:
+                    self.rb.remove_track(rt.id, from_collection=(self.rb.kind == rbmod.XML))
+            self.rekordbox_changed()
         self.lib.delete(ids)
         self.model.remove_ids(ids)
         self._refresh_pending()
@@ -1244,6 +1401,8 @@ class MainWindow(QMainWindow):
         dlg = SettingsDialog(self.s, self)
         if dlg.exec():
             self.player.set_device_id(self.s.get("audio/device"))
+            if getattr(dlg, "theme_changed", False):
+                self.set_theme(dlg.new_theme)
             if getattr(dlg, "backend_changed", False):
                 QMessageBox.information(self, "Einstellungen", "Die geänderte Wiedergabe-Technik wird "
                                         "nach einem Neustart von MusicOrganizer verwendet.")
@@ -1255,6 +1414,133 @@ class MainWindow(QMainWindow):
             fileops.reveal(p)
         else:
             QMessageBox.information(self, "Diagnose-Protokoll", "Noch kein Protokoll vorhanden.")
+
+    # ------------------------------------------------------------------ rekordbox
+    def open_rekordbox(self, show=True):
+        if self.rb_window is None:
+            self.rb_window = RekordboxWindow(self)
+        if show:
+            self.rb_window.show()
+            self.rb_window.raise_()
+            self.rb_window.activateWindow()
+        return self.rb_window
+
+    def set_rekordbox(self, lib):
+        old = self.rb
+        if old is not None and old is not lib and hasattr(old, "close"):
+            old.close()
+        self.rb = lib
+        if lib is not None and self.table.isColumnHidden(COL_INDEX["rb"]):
+            self.table.setColumnHidden(COL_INDEX["rb"], False)
+        self.rekordbox_changed()
+
+    def _autoload_rekordbox(self):
+        kind = self.s.value("rekordbox/kind", rbmod.XML)
+        try:
+            if kind == rbmod.XML:
+                p = self.s.value("rekordbox/xml", "")
+                if p and os.path.exists(p):
+                    self.set_rekordbox(rbmod.XmlLibrary.load(p))
+            else:
+                p = self.s.value("rekordbox/db", "") or rbmod.default_db_path()
+                if p and os.path.exists(p):
+                    self.set_rekordbox(rbmod.DbLibrary.load(p, os.path.join(self.data_dir, "rekordbox-backups")))
+        except rbmod.RekordboxError as e:
+            self.statusBar().showMessage(f"rekordbox konnte nicht geladen werden: {e}", 10000)
+            return
+        if self.rb is not None:
+            self.statusBar().showMessage(f"rekordbox geladen: {self.rb.label} ({len(self.rb.tracks):,} Titel)"
+                                         .replace(",", "."), 6000)
+
+    def rekordbox_changed(self):
+        """Nach Änderungen an rekordbox: Spalte „rekordbox“ in der Titelliste aktualisieren."""
+        info = {}
+        if self.rb is not None:
+            mem = self.rb.membership()
+            for t in self.model.all:
+                rt = self.rb.track_for_path(t.path)
+                if rt is not None:
+                    info[t.id] = mem.get(rt.id, [])
+        self.model.set_rb_info(info)
+        if self.rb_window is not None and self.rb_window.isVisible():
+            self.rb_window._update_state()
+
+    def rb_ids_in_mog(self):
+        if self.rb is None:
+            return set()
+        ids = set()
+        for t in self.model.all:
+            rt = self.rb.track_for_path(t.path)
+            if rt is not None:
+                ids.add(rt.id)
+        return ids
+
+    def reveal_in_list(self, path):
+        from mog.core.rekordbox import norm_path
+        target = norm_path(path)
+        t = next((x for x in self.model.all if norm_path(x.path) == target), None)
+        if t is None:
+            QMessageBox.information(self, "In MOG zeigen", "Diese Datei ist (noch) nicht in deiner MOG-Bibliothek.")
+            return
+        if self.model.row_for_id(t.id) is None:
+            self.search.clear()
+            self._select_sidebar(("view", "all"))
+            self._on_sidebar()
+        r = self.model.row_for_id(t.id)
+        if r is not None:
+            self.table.selectRow(r)
+            self.table.scrollTo(self.model.index(r, 0))
+            self.raise_()
+            self.activateWindow()
+
+    def _rb_add(self, tracks, node):
+        w = self.open_rekordbox(show=False)
+        w.add_tracks([t for t in tracks if not t.missing], node)
+        self.statusBar().showMessage("Zu rekordbox hinzugefügt – im rekordbox-Fenster speichern.", 8000)
+
+    def _rb_add_to_new(self, tracks):
+        from PySide6.QtWidgets import QInputDialog
+        name, ok = QInputDialog.getText(self, "Neue rekordbox-Playlist", "Name:", text="Neue Playlist")
+        if ok and name.strip():
+            node = self.rb.create_playlist(None, name.strip())
+            self._rb_add(tracks, node)
+            if self.rb_window is not None:
+                self.rb_window.refresh()
+
+    # ------------------------------------------------------------------ Darstellung
+    def _sync_theme_actions(self):
+        cur = theme.current_mode()
+        for k, a in self._theme_actions.items():
+            a.setChecked(k == cur)
+
+    def set_theme(self, mode):
+        from PySide6.QtWidgets import QApplication
+        from mog.core.paths import resource
+        theme.apply(QApplication.instance(), mode, resource("check.svg"), resource("chevron.svg"))
+        self.s.set("ui/theme", mode)
+        self.retheme()
+        self._sync_theme_actions()
+
+    def retheme(self):
+        """Alle selbst gefärbten Teile nach einem Wechsel Hell/Dunkel neu einfärben."""
+        self.header.retheme()
+        self._search_action.setIcon(icon("search", C["text3"]))
+        self._refresh_pending()
+        self._rebuild_sidebar()
+        self.player.retheme()
+        self.model.retheme()
+        for b, name in ((self.details.btn_edit, "tag"), (self.details.btn_rename, "rename"),
+                        (self.details.btn_reveal, "folder")):
+            b.setIcon(icon(name))
+        self.details.pending_lbl.setStyleSheet(f"color: {C['accent2']}; font-size: 12px;")
+        for b in self.empty.findChildren(QPushButton):
+            name = b.property("icon_name")
+            if name:
+                b.setIcon(icon(name, "#FFFFFF" if b.objectName() == "Primary" else None))
+        self._on_selection()
+        self.table.viewport().update()
+        if self.rb_window is not None:
+            self.rb_window.retheme()
 
     # ------------------------------------------------------------------ Updates & Info
     def check_updates(self, manual=False):
@@ -1299,15 +1585,15 @@ class MainWindow(QMainWindow):
         if isinstance(g, (QByteArray, bytes)):
             self.restoreGeometry(g)
         hh = self.table.horizontalHeader()
-        h = self.s.value("win/header_v2")
+        h = self.s.value("win/header_v3")
         if isinstance(h, (QByteArray, bytes)):
             hh.restoreState(h)
             hh.setSectionResizeMode(QHeaderView.Interactive)
             hh.setSectionsMovable(True)
             hh.setFirstSectionMovable(True)
         try:
-            col = int(self.s.value("win/sort_col", COL_INDEX["artist"]))
-            order = Qt.SortOrder(int(self.s.value("win/sort_order", 0)))
+            col = int(self.s.value("win/sort_col_v3", COL_INDEX["artist"]))
+            order = Qt.SortOrder(int(self.s.value("win/sort_order_v3", 0)))
             self.table.sortByColumn(col, order)
         except (TypeError, ValueError):
             pass
@@ -1322,6 +1608,18 @@ class MainWindow(QMainWindow):
                 pass
 
     def closeEvent(self, e):
+        if not self._closing_ok and self.rb is not None and self.rb.dirty:
+            r = QMessageBox.question(self, "rekordbox", f"Es gibt {self.rb.changes} ungespeicherte rekordbox-"
+                                     "Änderung(en) (Playlists/Titel). Jetzt speichern?",
+                                     QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel, QMessageBox.Save)
+            if r == QMessageBox.Cancel:
+                e.ignore()
+                return
+            if r == QMessageBox.Save:
+                self.open_rekordbox(show=False)
+                if not self.rb_window.save():
+                    e.ignore()
+                    return
         if not self._closing_ok:
             pend = self.lib.pending_ids()
             if pend:
@@ -1348,10 +1646,10 @@ class MainWindow(QMainWindow):
                     return
         self._closing_ok = True
         self.s.set("win/geometry", self.saveGeometry())
-        self.s.set("win/header_v2", self.table.horizontalHeader().saveState())
+        self.s.set("win/header_v3", self.table.horizontalHeader().saveState())
         col, order = self.model.sort_state()
-        self.s.set("win/sort_col", col)
-        self.s.set("win/sort_order", int(order.value) if hasattr(order, "value") else int(order))
+        self.s.set("win/sort_col_v3", col)
+        self.s.set("win/sort_order_v3", int(order.value) if hasattr(order, "value") else int(order))
         self.s.set("win/splitter", self.splitter.saveState())
         self.s.set("player/volume", self.player.vol.value())
         if self.scan_thread and self.scan_thread.isRunning():
@@ -1360,4 +1658,6 @@ class MainWindow(QMainWindow):
         for th in self._bg:
             th.wait(3000)
         self.player.stop()
+        if self.rb is not None and hasattr(self.rb, "close"):
+            self.rb.close()
         super().closeEvent(e)

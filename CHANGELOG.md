@@ -1,5 +1,22 @@
 # Änderungen
 
+## 0.3.0
+- **rekordbox-Anbindung** (Knopf „rekordbox“, Strg+R) in zwei umschaltbaren Varianten:
+  - **XML (offiziell, sicher):** rekordbox-XML öffnen oder neu anlegen, bearbeiten und speichern. Einlesen in rekordbox über Einstellungen → Erweitert → Datenbank → „rekordbox xml“. Cue-Punkte, Beatgrid und alle anderen Inhalte der Datei bleiben erhalten.
+  - **Datenbank (direkt, inoffiziell):** bearbeitet rekordbox' eigene Bibliothek (`master.db`, rekordbox 6/7). rekordbox muss beim Speichern geschlossen sein; vor jedem Speichern legt MOG eine Sicherung an (die letzten 10 werden aufbewahrt).
+  - Playlists und Ordner anlegen, umbenennen, per Drag & Drop verschieben, löschen; Titel aus MOG per Rechtsklick „Zu rekordbox hinzufügen“; Reihenfolge ändern; Titel-Infos bearbeiten (Artist, Titel, Album, Genre, Label, BPM, Tonart, Bewertung, Kommentar …).
+  - Neue Spalte „rekordbox“ zeigt, in wie vielen Playlists ein Titel steckt. Umbenennen in MOG zieht den Pfad in rekordbox mit, beim Löschen warnt MOG und entfernt die Titel auf Wunsch auch aus rekordbox.
+- **Tonart-Erkennung:** Analyse → „Tonart analysieren“ (oder BPM + Tonart in einem Durchgang). Anzeige als Camelot (8A), klassisch (Am) oder beides (Extras → Einstellungen); die Spalte „Tonart“ sortiert nach dem Camelot-Rad.
+- **Wellenform im Player:** farbige Wellenform (Bass/Mitten/Höhen) statt Schieberegler – Klick oder Ziehen spult, wird zwischengespeichert.
+- **Hell/Dunkel:** Extras → Darstellung → Dunkel, Hell oder „Wie System“ (folgt dem Systemwechsel automatisch).
+- **Duplikatsuche überarbeitet:**
+  - Spalten Artist, Titel, Länge, kbps, Erstellt (Erstellungsdatum der Datei), Format, rekordbox, Ordner.
+  - „Automatisch markieren“ nach wählbarer Regel: beste Qualität, älteste Datei behalten, neueste Datei behalten, Titel in rekordbox bevorzugen, bevorzugter Ordner.
+  - „Kein Duplikat“ blendet eine Gruppe dauerhaft aus (zurücksetzbar).
+  - „Markierte verschieben“ legt Duplikate erst in einen Prüfordner, statt sie zu löschen.
+  - Jede Gruppe zeigt, wie viel Platz das Löschen frei macht.
+- Neues Kürzel Strg+R öffnet rekordbox.
+
 ## 0.2.1
 - **Behoben:** Der Knopf „Speichern“ (und „Alle Änderungen speichern“ in der Seitenleiste) hat vorgemerkte Tag-Änderungen nicht geschrieben, sondern einen Fehler ins Protokoll geschrieben. Speichern beim Beenden war nicht betroffen.
 - **Behoben:** „Testton direkt“ meldete fälschlich einen Fehler, obwohl der Ton abgespielt wurde.

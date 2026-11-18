@@ -15,7 +15,7 @@ TAG_LABELS = {
 DB_COLUMNS = ["id", "path", "size", "mtime", "fmt", "artist", "title", "album", "albumartist",
               "genre", "year", "track", "bpm", "key", "label", "comment", "duration", "bitrate",
               "samplerate", "bits", "channels", "lossless", "has_cover", "tags_missing",
-              "audio_hash", "missing", "error"]
+              "audio_hash", "missing", "error", "created"]
 
 
 class Track:
@@ -99,6 +99,25 @@ def parse_bpm(value):
     except ValueError:
         return None
     return b if 0 < b < 1000 else None
+
+
+def file_created(st):
+    """Erstellungsdatum einer Datei aus os.stat (Windows/macOS: echtes Erstelldatum)."""
+    bt = getattr(st, "st_birthtime", None)
+    if bt:
+        return float(bt)
+    import sys
+    if sys.platform.startswith("win"):
+        return float(st.st_ctime)
+    return float(st.st_mtime)
+
+
+def format_date(ts, with_time=True):
+    if not ts:
+        return ""
+    import datetime
+    d = datetime.datetime.fromtimestamp(ts)
+    return d.strftime("%d.%m.%Y %H:%M" if with_time else "%d.%m.%Y")
 
 
 def format_duration(seconds):

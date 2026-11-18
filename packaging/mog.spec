@@ -4,7 +4,7 @@
 import os
 import sys
 
-from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs
+from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs, collect_submodules
 
 sys.path.insert(0, os.path.abspath("."))
 from mog import __version__  # noqa: E402
@@ -23,13 +23,19 @@ for f in os.listdir(BIN):
 # ffmpeg-Binary aus imageio-ffmpeg mitliefern
 datas += collect_data_files("imageio_ffmpeg", subdir="binaries")
 binaries += collect_dynamic_libs("imageio_ffmpeg")
+binaries += collect_dynamic_libs("sqlcipher3")
+datas += collect_data_files("pyrekordbox")
 
 a = Analysis(
     [os.path.join(ROOT, "packaging", "run_mog.py")],
     pathex=[ROOT],
     binaries=binaries,
     datas=datas,
-    hiddenimports=["PySide6.QtMultimedia", "PySide6.QtSvg", "PySide6.QtNetwork"],
+    hiddenimports=["PySide6.QtMultimedia", "PySide6.QtSvg", "PySide6.QtNetwork",
+                   # rekordbox-Datenbank (pyrekordbox nutzt SQLAlchemy mit dem SQLCipher-Dialekt)
+                   "sqlcipher3", "sqlcipher3.dbapi2"]
+                  + collect_submodules("pyrekordbox")
+                  + collect_submodules("sqlalchemy.dialects.sqlite"),
     excludes=["tkinter", "matplotlib", "PIL", "cryptography", "cairosvg", "fontTools", "IPython", "PySide6.QtWebEngineCore", "PySide6.QtWebEngineWidgets",
               "PySide6.Qt3DCore", "PySide6.QtQuick", "PySide6.QtQml", "PySide6.QtCharts",
               "PySide6.QtDataVisualization", "PySide6.QtPdf", "PySide6.QtBluetooth",

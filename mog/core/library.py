@@ -20,12 +20,15 @@ CREATE TABLE IF NOT EXISTS tracks (
     duration REAL, bitrate INTEGER, samplerate INTEGER, bits INTEGER, channels INTEGER,
     lossless INTEGER, has_cover INTEGER, tags_missing INTEGER,
     audio_hash TEXT, missing INTEGER DEFAULT 0, error TEXT,
-    fingerprint BLOB, fp_duration REAL
+    fingerprint BLOB, fp_duration REAL, created REAL
 );
 CREATE INDEX IF NOT EXISTS idx_tracks_size ON tracks(size);
 CREATE TABLE IF NOT EXISTS roots (
     path TEXT PRIMARY KEY,
     added REAL
+);
+CREATE TABLE IF NOT EXISTS dup_ignore (
+    ids TEXT PRIMARY KEY
 );
 CREATE TABLE IF NOT EXISTS pending (
     track_id INTEGER NOT NULL,
@@ -75,7 +78,14 @@ class Library:
         self.con.execute("PRAGMA journal_mode=WAL")
         self.con.execute("PRAGMA synchronous=NORMAL")
         self.con.executescript(SCHEMA)
+        self._migrate()
         self.con.commit()
+
+    def _migrate(self):
+        """Ältere Bibliotheken um neue Spalten ergänzen."""
+        cols = {r[1] for r in self.con.execute("PRAGMA table_info(tracks)")}
+        if "created" not in cols:
+            self.con.execute("ALTER TABLE tracks ADD COLUMN created REAL")
 
     def close(self):
         self.con.close()
@@ -154,6 +164,7 @@ class Library:
             self.con.execute("DELETE FROM tracks")
             self.con.execute("DELETE FROM roots")
             self.con.execute("DELETE FROM pending")
+            self.con.execute("DELETE FROM dup_ignore")
             self.con.execute("DELETE FROM sqlite_sequence WHERE name='tracks'")
         self.con.execute("VACUUM")
 
@@ -186,6 +197,36 @@ class Library:
         with self.con:
             self.con.execute("UPDATE tracks SET fingerprint=?, fp_duration=? WHERE id=?",
                              (blob, duration, track_id))
+
+    def fill_created(self, tracks):
+        """Erstellungsdatum für Titel nachtragen, die vor Version 0.3 eingelesen wurden."""
+        from .track import file_created
+        rows = []
+        for t in tracks:
+            if t.created or t.missing:
+                continue
+            try:
+                t.created = file_created(os.stat(t.path))
+                rows.append((t.created, t.id))
+            except OSError:
+                pass
+        if rows:
+            with self.con:
+                self.con.executemany("UPDATE tracks SET created=? WHERE id=?", rows)
+        return len(rows)
+
+    # --- Duplikate: „Kein Duplikat“ merken ---------------------------------
+    def dup_ignored(self):
+        return [frozenset(int(x) for x in r[0].split(",")) for r in self.con.execute("SELECT ids FROM dup_ignore")]
+
+    def add_dup_ignore(self, ids):
+        key = ",".join(str(i) for i in sorted(ids))
+        with self.con:
+            self.con.execute("INSERT OR IGNORE INTO dup_ignore (ids) VALUES (?)", (key,))
+
+    def clear_dup_ignore(self):
+        with self.con:
+            self.con.execute("DELETE FROM dup_ignore")
 
     # --- Quellen ---------------------------------------------------------
     def roots(self):

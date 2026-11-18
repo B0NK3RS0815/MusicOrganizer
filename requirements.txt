@@ -5,3 +5,4 @@ numpy>=1.26              # BPM-Analyse, Fingerabdruck-Vergleich
 requests>=2.31           # Online-Datenbanken
 Send2Trash>=1.8          # Löschen in den Papierkorb (Windows & macOS)
 imageio-ffmpeg>=0.5      # mitgeliefertes ffmpeg für Konvertierung
+pyrekordbox==0.5.0      # rekordbox-6/7-Datenbank (master.db) lesen/schreiben – Variante „Datenbank“

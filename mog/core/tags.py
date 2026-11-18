@@ -16,7 +16,7 @@ from mutagen.id3 import (APIC, COMM, ID3, TALB, TBPM, TCON, TDRC, TIT2, TKEY, TP
 from mutagen.mp4 import MP4, MP4Cover, MP4FreeForm
 
 from .formats import format_for_extension, get_format
-from .track import TAG_FIELDS, Track, parse_bpm
+from .track import TAG_FIELDS, Track, file_created, parse_bpm
 
 
 class TagError(Exception):
@@ -388,7 +388,7 @@ def read_track(path):
         key=d.get("key", ""), label=d.get("label", ""), comment=d.get("comment", ""),
         duration=length, bitrate=bitrate, samplerate=samplerate, bits=bits,
         channels=channels, lossless=get_format(fmt).lossless, has_cover=cover is not None,
-        tags_missing=tags_missing, missing=False, error="",
+        tags_missing=tags_missing, missing=False, error="", created=file_created(st),
     )
 
 

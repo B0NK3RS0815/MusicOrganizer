@@ -53,6 +53,10 @@ _ICONS = {
     "plus": ('S', '<path d="M12 5v14M5 12h14"/>'),
     "image": ('S', '<rect x="3.5" y="4.5" width="17" height="15" rx="2"/><circle cx="9" cy="10" r="1.8"/><path d="m4 18 5.5-5 4 3.5 2.5-2 4.5 3.5"/>'),
     "swap": ('S', '<path d="M7 4v16M3.5 7.5 7 4l3.5 3.5"/><path d="M17 20V4M13.5 16.5 17 20l3.5-3.5"/>'),
+    "key": ('S', '<path d="M9 4.5 7.5 19.5M15 4.5l-1.5 15M5 9.5h14M4.5 14.5h14"/>'),
+    "rekordbox": ('S', '<circle cx="11" cy="12" r="8"/><circle cx="11" cy="12" r="2.2"/><path d="M19.5 4.5 15 12.5"/><circle cx="19.5" cy="4.5" r="1"/>'),
+    "up": ('S', '<path d="M12 19V5M6 11l6-6 6 6"/>'),
+    "down": ('S', '<path d="M12 5v14M6 13l6 6 6-6"/>'),
     "save": ('S', '<path d="M5 3.5h11.5L20.5 7.5V19a1.5 1.5 0 0 1-1.5 1.5H5A1.5 1.5 0 0 1 3.5 19V5A1.5 1.5 0 0 1 5 3.5z"/><path d="M7.5 3.5v5h8v-5"/><rect x="7" y="13" width="10" height="7.5" rx="1"/>'),
     "power": ('S', '<path d="M12 3v8.5"/><path d="M7 6.2a7.5 7.5 0 1 0 10 0"/>'),
     "rename": ('S', '<rect x="3" y="7" width="18" height="10" rx="2"/><path d="M13 4.5h2.5M14.25 4.5v15M13 19.5h2.5"/><path d="M6.5 12h4"/>'),
@@ -89,24 +93,40 @@ def _render(svg_text, w, h, dpr=2.0):
 
 
 @lru_cache(maxsize=None)
-def icon(name, color="#C9CAD6", active=None, size=24):
+def _icon(name, color, active, disabled, size):
     ic = QIcon()
     ic.addPixmap(_render(_svg(name, color), size, size), QIcon.Normal)
-    ic.addPixmap(_render(_svg(name, active or "#FFFFFF"), size, size), QIcon.Active)
-    ic.addPixmap(_render(_svg(name, "#5A5D6C"), size, size), QIcon.Disabled)
+    ic.addPixmap(_render(_svg(name, active), size, size), QIcon.Active)
+    ic.addPixmap(_render(_svg(name, disabled), size, size), QIcon.Disabled)
     return ic
 
 
+def icon(name, color=None, active=None, size=24):
+    """Icon in Theme-Farbe (color/active None = aus dem aktiven Farbschema)."""
+    from .theme import C
+    return _icon(name, color or C["icon"], active or C["icon_active"], C["icon_disabled"], size)
+
+
 @lru_cache(maxsize=None)
-def pixmap(name, color="#C9CAD6", size=24):
+def _pixmap(name, color, size):
     return _render(_svg(name, color), size, size)
+
+
+def pixmap(name, color=None, size=24):
+    from .theme import C
+    return _pixmap(name, color or C["icon"], size)
 
 
 # --------------------------------------------------------------------------
 # Format-Badges ("Logo" des Audioformats)
 # --------------------------------------------------------------------------
-@lru_cache(maxsize=None)
 def format_badge(fmt_key, height=18, dpr=2.0):
+    from .theme import is_light
+    return _format_badge(fmt_key, height, dpr, is_light())
+
+
+@lru_cache(maxsize=None)
+def _format_badge(fmt_key, height, dpr, light):
     fmt = get_format(fmt_key)
     text = fmt.label
     f = QFont()
@@ -130,11 +150,12 @@ def format_badge(fmt_key, height=18, dpr=2.0):
         p.setPen(QColor("#0E0F13"))
     else:
         bg = QColor(col)
-        bg.setAlpha(40)
+        bg.setAlpha(55 if light else 40)
         p.fillPath(path, bg)
-        p.setPen(col)
+        edge = col.darker(125) if light else col
+        p.setPen(edge)
         p.drawPath(path)
-        p.setPen(col.lighter(125))
+        p.setPen(col.darker(150) if light else col.lighter(125))
     p.setFont(f)
     p.drawText(rect, Qt.AlignCenter, text)
     p.end()
@@ -144,8 +165,9 @@ def format_badge(fmt_key, height=18, dpr=2.0):
 # --------------------------------------------------------------------------
 # Logo
 # --------------------------------------------------------------------------
-def logo_pixmap(height, variant="dark", dpr=2.0):
-    path = resource(f"mog_wordmark_{variant}.svg")
+def logo_pixmap(height, variant=None, dpr=2.0):
+    from .theme import C
+    path = resource(f"mog_wordmark_{variant or C['logo']}.svg")
     r = QSvgRenderer(path)
     size = r.defaultSize()
     w = int(size.width() * height / size.height())
@@ -187,6 +209,7 @@ def svg_pixmap(path, w, h, dpr=2.0):
 
 def placeholder_cover(size=220, dpr=2.0):
     """Schallplatte als Platzhalter, wenn kein Cover vorhanden ist."""
+    from .theme import C
     pm = QPixmap(int(size * dpr), int(size * dpr))
     pm.fill(Qt.transparent)
     pm.setDevicePixelRatio(dpr)
@@ -194,12 +217,12 @@ def placeholder_cover(size=220, dpr=2.0):
     p.setRenderHint(QPainter.Antialiasing)
     path = QPainterPath()
     path.addRoundedRect(QRectF(0, 0, size, size), 10, 10)
-    p.fillPath(path, QColor("#1C1E27"))
+    p.fillPath(path, QColor(C["cover_bg"]))
     c = size / 2
     p.setPen(Qt.NoPen)
-    p.setBrush(QColor("#0F1015"))
+    p.setBrush(QColor(C["cover_disc"]))
     p.drawEllipse(QRectF(c - size * 0.36, c - size * 0.36, size * 0.72, size * 0.72))
-    pen_col = QColor(255, 255, 255, 14)
+    pen_col = QColor(*C["cover_groove"])
     from PySide6.QtGui import QPen
     p.setBrush(Qt.NoBrush)
     for i in range(9):
@@ -207,9 +230,9 @@ def placeholder_cover(size=220, dpr=2.0):
         p.setPen(QPen(pen_col, 1))
         p.drawEllipse(QRectF(c - r, c - r, 2 * r, 2 * r))
     p.setPen(Qt.NoPen)
-    p.setBrush(QColor("#2C2F3B"))
+    p.setBrush(QColor(C["cover_label"]))
     p.drawEllipse(QRectF(c - size * 0.12, c - size * 0.12, size * 0.24, size * 0.24))
-    p.setBrush(QColor("#1C1E27"))
+    p.setBrush(QColor(C["cover_bg"]))
     p.drawEllipse(QRectF(c - 4, c - 4, 8, 8))
     p.end()
     return pm

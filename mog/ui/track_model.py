@@ -10,7 +10,8 @@ from PySide6.QtCore import QAbstractTableModel, QModelIndex, QSize, Qt
 from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import QStyle, QStyledItemDelegate
 
-from mog.core.track import format_bpm, format_duration, format_size
+from mog.core.keydetect import camelot_sort_key
+from mog.core.track import format_bpm, format_date, format_duration, format_size
 
 from .icons import format_badge
 from .theme import C
@@ -19,13 +20,14 @@ TrackRole = Qt.UserRole + 1
 
 # key, Überschrift, standardmäßig sichtbar, Breite, Ausrichtung
 COLUMNS = [
-    ("artist", "Artist", True, 240, Qt.AlignLeft),
-    ("title", "Titel", True, 360, Qt.AlignLeft),
+    ("artist", "Artist", True, 220, Qt.AlignLeft),
+    ("title", "Titel", True, 290, Qt.AlignLeft),
     ("bpm", "BPM", True, 64, Qt.AlignRight),
+    ("key", "Tonart", True, 70, Qt.AlignCenter),
     ("duration", "Länge", True, 70, Qt.AlignRight),
-    ("bitrate", "Qualität (kbps)", True, 112, Qt.AlignRight),
+    ("bitrate", "Qualität (kbps)", True, 108, Qt.AlignRight),
     ("fmt", "Format", True, 78, Qt.AlignCenter),
-    ("key", "Tonart", False, 64, Qt.AlignCenter),
+    ("rb", "rekordbox", False, 86, Qt.AlignCenter),
     ("album", "Album", False, 200, Qt.AlignLeft),
     ("genre", "Genre", False, 120, Qt.AlignLeft),
     ("year", "Jahr", False, 56, Qt.AlignCenter),
@@ -34,6 +36,7 @@ COLUMNS = [
     ("size", "Größe", False, 80, Qt.AlignRight),
     ("filename", "Dateiname", False, 260, Qt.AlignLeft),
     ("path", "Pfad", False, 380, Qt.AlignLeft),
+    ("created", "Erstellt", False, 128, Qt.AlignRight),
 ]
 COL_INDEX = {c[0]: i for i, c in enumerate(COLUMNS)}
 
@@ -50,7 +53,7 @@ SORT_KEYS = {
     "duration": lambda t: t.duration or 0.0,
     "bitrate": lambda t: t.bitrate or 0,
     "fmt": lambda t: (t.fmt or "", -(t.bitrate or 0)),
-    "key": lambda t: (not t.key, _low(t.key)),
+    "key": lambda t: camelot_sort_key(t.key),
     "album": lambda t: (not t.album, _low(t.album)),
     "genre": lambda t: (not t.genre, _low(t.genre)),
     "year": lambda t: (not t.year, t.year or ""),
@@ -59,6 +62,8 @@ SORT_KEYS = {
     "size": lambda t: t.size or 0,
     "filename": lambda t: _low(t.filename),
     "path": lambda t: _low(t.path),
+    "created": lambda t: t.created or 0.0,
+    "rb": lambda t: 0,      # wird im Modell über rb_info ersetzt
 }
 
 VIEWS = {
@@ -91,6 +96,7 @@ class TrackModel(QAbstractTableModel):
         self.view = []           # gefilterte + sortierte Anzeige
         self.view_row = {}
         self.pending = {}        # track_id -> {geänderte Felder}
+        self.rb_info = {}        # track_id -> [Playlist-Namen] (Titel ist in rekordbox)
         self.playing_id = None
         self._search_cache = {}
         self._words = []
@@ -229,8 +235,23 @@ class TrackModel(QAbstractTableModel):
         self.view_row = {t.id: i for i, t in enumerate(view)}
         self.endResetModel()
 
+    def set_rb_info(self, info):
+        self.rb_info = info
+        c = COL_INDEX["rb"]
+        if self.view:
+            self.dataChanged.emit(self.index(0, c), self.index(len(self.view) - 1, c))
+
+    def retheme(self):
+        self._pending_col = QColor(C["accent2"])
+        self.layoutChanged.emit()
+
     def _sort_list(self, lst):
-        key = SORT_KEYS[COLUMNS[self._sort_col][0]]
+        col = COLUMNS[self._sort_col][0]
+        if col == "rb":
+            info = self.rb_info
+            key = lambda t: (t.id not in info, -len(info.get(t.id, [])))  # noqa: E731
+        else:
+            key = SORT_KEYS[col]
         lst.sort(key=key, reverse=(self._sort_order == Qt.DescendingOrder))
 
     def sort(self, column, order=Qt.AscendingOrder):
@@ -323,6 +344,13 @@ class TrackModel(QAbstractTableModel):
                 return format_size(t.size)
             if key == "filename":
                 return t.filename
+            if key == "created":
+                return format_date(t.created)
+            if key == "rb":
+                pl = self.rb_info.get(t.id)
+                if pl is None:
+                    return ""
+                return f"● {len(pl)}" if pl else "●"
             return getattr(t, key, "") or ""
         if role == TrackRole:
             return t
@@ -336,7 +364,9 @@ class TrackModel(QAbstractTableModel):
                 return QColor(C["text3"])
             if key == "bitrate":
                 return quality_color(t)
-            if key in ("bpm", "duration", "key", "year", "samplerate", "size"):
+            if key == "rb" and t.id in self.rb_info:
+                return QColor(C["ok"])
+            if key in ("bpm", "duration", "key", "year", "samplerate", "size", "created"):
                 return QColor(C["text2"])
             if key == "artist" and t.tags_missing:
                 return QColor(C["text2"])
@@ -352,6 +382,10 @@ class TrackModel(QAbstractTableModel):
                 return "Geändert – wird beim Speichern bzw. beim Beenden in die Datei geschrieben"
             if t.missing:
                 return f"Datei nicht erreichbar:\n{t.path}"
+            if key == "rb" and t.id in self.rb_info:
+                pl = self.rb_info[t.id]
+                return ("In der rekordbox-Sammlung" + (":\n• " + "\n• ".join(pl[:15]) if pl else
+                                                       " (in keiner Playlist)"))
             if key == "fmt":
                 tip = t.format.name
                 if t.samplerate:

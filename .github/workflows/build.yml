@@ -59,6 +59,24 @@ jobs:
       - name: App bauen (PyInstaller)
         run: pyinstaller packaging/mog.spec --noconfirm --clean
 
+      # Startet das fertige Programm im Prüfmodus: lädt rekordbox-Bibliothek, Verschlüsselung usw.
+      - name: Selbsttest (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:MOG_SELFTEST = "$PWD\selftest.txt"
+          $p = Start-Process -FilePath "dist\MusicOrganizer\MusicOrganizer.exe" -Wait -PassThru
+          Get-Content selftest.txt
+          if ($p.ExitCode -ne 0) { exit 1 }
+
+      - name: Selbsttest (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          rc=0
+          MOG_SELFTEST="$PWD/selftest.txt" dist/MusicOrganizer.app/Contents/MacOS/MusicOrganizer || rc=$?
+          cat selftest.txt || true
+          exit $rc
+
       # ---------- Windows ----------
       - name: Installer erstellen (Inno Setup)
         if: runner.os == 'Windows'
