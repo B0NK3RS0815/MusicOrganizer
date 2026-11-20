@@ -10,7 +10,7 @@ on:
       - "packaging/**"
       - "tools/**"
       - "requirements*.txt"
-      - ".github/workflows/**"
+      - ".github/workflows/build.yml"
   workflow_dispatch:
 
 permissions:
@@ -24,11 +24,8 @@ jobs:
         include:
           - os: windows-latest
             name: Windows-x64
-          # Apple-Chip-Build (macos-15, name: macOS-arm64) vorerst deaktiviert: GitHub hatte
-          # am 09./10.11.2026 sechsmal keinen arm64-Runner frei. Die Intel-Version läuft per
-          # Rosetta auch auf Apple-Chip-Macs. Zum Reaktivieren hier wieder eintragen:
-          #   - os: macos-15
-          #     name: macOS-arm64
+          # Apple-Chip (macOS-arm64) läuft seit 21.11.2026 im eigenen Ablauf
+          # build-macos-arm64.yml, startet automatisch nach diesem Build und hängt die DMG an.
           - os: macos-15-intel      # Intel-Macs
             name: macOS-x86_64
     runs-on: ${{ matrix.os }}

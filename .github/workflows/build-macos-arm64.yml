@@ -1,0 +1,120 @@
+name: Build macOS Apple-Chip
+
+# Eigener Ablauf für Macs mit Apple-Chip (M1–M4), getrennt vom Hauptbuild:
+# Ist bei GitHub gerade kein Apple-Chip-Rechner frei, verzögert das nicht mehr die
+# Windows-/Intel-Downloads. Die DMG wird dem bestehenden Release der Version angehängt.
+on:
+  # Nach jedem Hauptbuild automatisch
+  workflow_run:
+    workflows: ["Build MusicOrganizer"]
+    types: [completed]
+  # Von Hand (Actions → „Build macOS Apple-Chip“ → „Run workflow“), z. B. für eine ältere Version
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Branch, Tag oder Commit (Standard: main)"
+        required: false
+        default: "main"
+  # Bei Änderungen an diesem Ablauf selbst
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/build-macos-arm64.yml"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: macos-arm64-${{ github.event.workflow_run.head_sha || github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion != 'cancelled' }}
+    runs-on: macos-15            # Apple-Chip (arm64)
+    timeout-minutes: 60
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || inputs.ref || github.sha }}
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Prozessor prüfen
+        run: |
+          uname -m
+          python -c "import platform; m = platform.machine(); print('Python:', m); assert m == 'arm64', m"
+
+      - name: Version lesen und Release prüfen
+        id: ver
+        run: |
+          VER=$(python -c "import re; print(re.search(r'__version__ = \"(.+?)\"', open('mog/__init__.py').read()).group(1))")
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
+          if gh release view "v$VER" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            echo "release=yes" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::Release v$VER gibt es (noch) nicht – die DMG wird nur als Artefakt hochgeladen."
+            echo "release=no" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Abhängigkeiten installieren
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-build.txt
+
+      - name: fpcalc (Chromaprint) laden
+        run: python tools/fetch_fpcalc.py
+
+      - name: ffmpeg prüfen
+        run: |
+          FF=$(python -c "import imageio_ffmpeg; print(imageio_ffmpeg.get_ffmpeg_exe())")
+          echo "ffmpeg: $FF"; file "$FF"
+          "$FF" -hide_banner -encoders | grep -E "libmp3lame|flac|aac|alac" || echo "::warning::Encoder unvollständig"
+
+      - name: App bauen (PyInstaller)
+        run: pyinstaller packaging/mog.spec --noconfirm --clean
+
+      - name: Selbsttest
+        run: |
+          file dist/MusicOrganizer.app/Contents/MacOS/MusicOrganizer
+          rc=0
+          MOG_SELFTEST="$PWD/selftest.txt" dist/MusicOrganizer.app/Contents/MacOS/MusicOrganizer || rc=$?
+          cat selftest.txt || true
+          exit $rc
+
+      - name: Signieren & DMG erstellen
+        run: |
+          codesign --force --deep --sign - dist/MusicOrganizer.app
+          VER=${{ steps.ver.outputs.version }}
+          STAGE=$(mktemp -d)
+          cp -R dist/MusicOrganizer.app "$STAGE/"
+          ln -s /Applications "$STAGE/Programme"
+          hdiutil create -volname MusicOrganizer -srcfolder "$STAGE" -ov -format UDZO \
+            "dist/MusicOrganizer-${VER}-macOS-arm64.dmg"
+
+      - name: Artefakt hochladen
+        uses: actions/upload-artifact@v7
+        with:
+          name: MusicOrganizer-macOS-arm64
+          path: dist/*.dmg
+          if-no-files-found: error
+
+      - name: An Release anhängen
+        if: steps.ver.outputs.release == 'yes'
+        run: |
+          VER=${{ steps.ver.outputs.version }}
+          gh release upload "v$VER" "dist/MusicOrganizer-${VER}-macOS-arm64.dmg" --clobber --repo "$GITHUB_REPOSITORY"
+          # Download-Tabelle im Release-Text anpassen
+          gh release view "v$VER" --repo "$GITHUB_REPOSITORY" --json body -q .body > body.md
+          python - <<'PY'
+          s = open("body.md", encoding="utf-8").read()
+          old = "| **Mac mit Apple-Chip (M1–M4)** | `…-macOS-x86_64.dmg` (läuft per Rosetta) |"
+          new = "| **Mac mit Apple-Chip (M1–M4)** | `…-macOS-arm64.dmg` (empfohlen) oder `…-macOS-x86_64.dmg` (per Rosetta) |"
+          open("body.md", "w", encoding="utf-8").write(s.replace(old, new))
+          PY
+          gh release edit "v$VER" --notes-file body.md --repo "$GITHUB_REPOSITORY"
