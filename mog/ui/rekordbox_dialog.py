@@ -1,7 +1,7 @@
 """rekordbox-Fenster: Variante wählen (XML / Datenbank), Playlists und Titel bearbeiten."""
 import os
 
-from PySide6.QtCore import QAbstractTableModel, QModelIndex, QSize, Qt, Signal
+from PySide6.QtCore import QAbstractTableModel, QMimeData, QModelIndex, QSize, Qt, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QComboBox, QDialog, QDialogButtonBox,
                                QFileDialog, QFormLayout, QHBoxLayout, QHeaderView, QInputDialog, QLabel,
@@ -17,6 +17,7 @@ from .icons import icon
 from .theme import C
 
 COLLECTION = "__collection__"
+TRACK_MIME = "application/x-mog-rekordbox-tracks"
 STARS = ["–", "★", "★★", "★★★", "★★★★", "★★★★★"]
 KEYS = [""] + sorted(CAMELOT_TO_MUSICAL, key=camelot_sort_key)
 
@@ -25,12 +26,12 @@ KEYS = [""] + sorted(CAMELOT_TO_MUSICAL, key=camelot_sort_key)
 # Titel-Tabelle
 # --------------------------------------------------------------------------
 class RBTrackModel(QAbstractTableModel):
-    HEAD = ["#", "Artist", "Titel", "BPM", "Tonart", "Bewertung", "Länge", "In MOG", "Pfad"]
+    HEAD = ["#", "Artist", "Titel", "BPM", "Tonart", "Bewertung", "Länge", "kbps", "In MOG", "Pfad"]
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.rows = []          # RBTrack-Objekte
-        self.in_mog = set()     # Track-IDs, die auch in der MOG-Bibliothek sind
+        self.in_mog = {}        # Track-ID -> Bitrate (kbps) laut MOG, für Titel, die auch in MOG sind
         self.sortable = True
 
     def set_rows(self, rows, in_mog, sortable=True):
@@ -51,24 +52,54 @@ class RBTrackModel(QAbstractTableModel):
             return self.HEAD[section]
         return None
 
+    def kbps(self, t):
+        if t.bitrate:
+            return t.bitrate
+        v = self.in_mog.get(t.id) if isinstance(self.in_mog, dict) else 0
+        return v or 0
+
+    def flags(self, index):
+        f = super().flags(index)
+        return f | Qt.ItemIsDragEnabled if index.isValid() else f
+
+    def mimeTypes(self):
+        return [TRACK_MIME]
+
+    def mimeData(self, indexes):
+        rows = sorted({i.row() for i in indexes})
+        md = QMimeData()
+        md.setData(TRACK_MIME, "\n".join(self.rows[r].id for r in rows).encode("utf-8"))
+        return md
+
+    def supportedDragActions(self):
+        return Qt.MoveAction | Qt.CopyAction
+
     def data(self, index, role=Qt.DisplayRole):
         if not index.isValid():
             return None
         t = self.rows[index.row()]
         c = index.column()
         if role == Qt.DisplayRole:
+            k = self.kbps(t)
             return [str(index.row() + 1), t.artist, t.title, format_bpm(t.bpm), t.key,
                     STARS[t.rating] if t.rating else "", format_duration(t.length),
-                    "✓" if t.id in self.in_mog else "", t.path][c]
+                    str(k) if k else "", "✓" if t.id in self.in_mog else "", t.path][c]
         if role == Qt.UserRole:
             return t
         if role == Qt.TextAlignmentRole:
-            return int((Qt.AlignRight if c in (0, 3, 6) else Qt.AlignCenter if c in (4, 5, 7)
+            return int((Qt.AlignRight if c in (0, 3, 6, 7) else Qt.AlignCenter if c in (4, 5, 8)
                         else Qt.AlignLeft) | Qt.AlignVCenter)
         if role == Qt.ForegroundRole:
-            if c == 7:
+            if c == 8:
                 return QColor(C["ok"])
-            if c in (0, 3, 6, 8):
+            if c == 7:
+                k = self.kbps(t)
+                if k and k < 160:
+                    return QColor(C["bad"])
+                if k and k < 250:
+                    return QColor(C["accent2"])
+                return QColor(C["text2"])
+            if c in (0, 3, 6, 9):
                 return QColor(C["text2"])
             if c == 5:
                 return QColor(C["accent2"])
@@ -77,6 +108,10 @@ class RBTrackModel(QAbstractTableModel):
         if role == Qt.ToolTipRole:
             if t.path and not os.path.exists(t.path):
                 return f"Datei nicht gefunden:\n{t.path}"
+            if c == 7:
+                if not t.bitrate and self.kbps(t):
+                    return "Bitrate aus der MOG-Bibliothek (rekordbox hat keinen Wert gespeichert)"
+                return "Bitrate (kbps)"
             return t.path
         return None
 
@@ -85,7 +120,8 @@ class RBTrackModel(QAbstractTableModel):
             return
         keys = [None, lambda t: (t.artist or "").lower(), lambda t: (t.title or "").lower(),
                 lambda t: t.bpm or 0, lambda t: camelot_sort_key(t.key), lambda t: t.rating,
-                lambda t: t.length, lambda t: t.id in self.in_mog, lambda t: t.path.lower()]
+                lambda t: t.length, lambda t: self.kbps(t), lambda t: t.id in self.in_mog,
+                lambda t: t.path.lower()]
         self.layoutAboutToBeChanged.emit()
         self.rows.sort(key=keys[column], reverse=order == Qt.DescendingOrder)
         self.layoutChanged.emit()
@@ -96,6 +132,7 @@ class RBTrackModel(QAbstractTableModel):
 # --------------------------------------------------------------------------
 class PlaylistTree(QTreeWidget):
     moved = Signal(object, object, int)     # node, neuer Elternknoten, Index
+    tracks_dropped = Signal(object, list, bool)   # Ziel-Playlist, Track-IDs, kopieren?
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -105,7 +142,47 @@ class PlaylistTree(QTreeWidget):
         self.setIconSize(QSize(18, 18))
         self.setIndentation(16)
 
+    def _track_target(self, e):
+        it = self.itemAt(e.position().toPoint())
+        node = it.data(0, Qt.UserRole) if it else None
+        if node is None or node == COLLECTION or node.kind != "playlist" or not node.editable:
+            return None
+        return node
+
+    def _wants_copy(self, e):
+        src = getattr(self, "source_node", None)
+        return bool(e.modifiers() & (Qt.ControlModifier | Qt.AltModifier)) or \
+            src in (None, COLLECTION) or getattr(src, "kind", "") != "playlist"
+
+    def dragEnterEvent(self, e):
+        if e.mimeData().hasFormat(TRACK_MIME):
+            e.acceptProposedAction()
+            return
+        super().dragEnterEvent(e)
+
+    def dragMoveEvent(self, e):
+        if e.mimeData().hasFormat(TRACK_MIME):
+            node = self._track_target(e)
+            if node is None or node is getattr(self, "source_node", None):
+                e.ignore()
+                return
+            e.setDropAction(Qt.CopyAction if self._wants_copy(e) else Qt.MoveAction)
+            e.accept()
+            return
+        super().dragMoveEvent(e)
+
     def dropEvent(self, e):
+        if e.mimeData().hasFormat(TRACK_MIME):
+            node = self._track_target(e)
+            if node is None:
+                e.ignore()
+                return
+            ids = [x for x in bytes(e.mimeData().data(TRACK_MIME)).decode("utf-8").split("\n") if x]
+            copy = self._wants_copy(e)
+            e.setDropAction(Qt.CopyAction)     # Quelle entfernt nichts selbst
+            e.accept()
+            self.tracks_dropped.emit(node, ids, copy)
+            return
         src = self.currentItem()
         node = src.data(0, Qt.UserRole) if src else None
         if node is None or not getattr(node, "editable", False):
@@ -258,10 +335,13 @@ class RekordboxWindow(QDialog):
         self.table.setSortingEnabled(True)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.table.setDragEnabled(True)
+        self.table.setDragDropMode(QAbstractItemView.DragOnly)
+        self.table.setDefaultDropAction(Qt.MoveAction)
         hh = self.table.horizontalHeader()
         hh.setSectionsMovable(True)
         hh.setSectionResizeMode(QHeaderView.Interactive)
-        for i, w in enumerate([40, 190, 240, 56, 60, 86, 60, 60, 340]):
+        for i, w in enumerate([40, 190, 240, 56, 60, 86, 60, 54, 60, 340]):
             self.table.setColumnWidth(i, w)
         rl.addWidget(self.table, 1)
         tb = QHBoxLayout()
@@ -273,9 +353,21 @@ class RekordboxWindow(QDialog):
         self.b_up.setToolTip("Nach oben")
         self.b_down = QPushButton(icon("down"), "")
         self.b_down.setToolTip("Nach unten")
+        self.b_moveto = QPushButton(icon("library"), " Verschieben nach …")
+        self.b_moveto.setToolTip("Markierte Titel in eine andere Playlist verschieben "
+                                 "(oder einfach auf eine Playlist links ziehen – mit Strg: kopieren)")
+        self.m_moveto = QMenu(self.b_moveto)
+        self.b_moveto.setMenu(self.m_moveto)
+        self.m_moveto.aboutToShow.connect(lambda: self._fill_target_menu(self.m_moveto, copy=False))
+        self.b_copyto = QPushButton(icon("plus"), " Kopieren nach …")
+        self.b_copyto.setToolTip("Markierte Titel zusätzlich in eine andere Playlist aufnehmen")
+        self.m_copyto = QMenu(self.b_copyto)
+        self.b_copyto.setMenu(self.m_copyto)
+        self.m_copyto.aboutToShow.connect(lambda: self._fill_target_menu(self.m_copyto, copy=True))
         self.b_edit = QPushButton(icon("tag"), " Bearbeiten …")
         self.b_show = QPushButton(icon("search"), " In MOG zeigen")
-        for b in (self.b_add, self.b_remove, self.b_up, self.b_down, self.b_edit, self.b_show):
+        for b in (self.b_add, self.b_remove, self.b_up, self.b_down, self.b_moveto, self.b_copyto,
+                  self.b_edit, self.b_show):
             tb.addWidget(b)
         tb.addStretch()
         rl.addLayout(tb)
@@ -301,6 +393,7 @@ class RekordboxWindow(QDialog):
         self._icons = [(self.b_open, "folder"), (self.b_new, "plus"), (self.b_db, "library"),
                        (self.b_dbpath, "folder"), (self.b_newpl, "plus"), (self.b_newfo, "folder"),
                        (self.b_add, "plus"), (self.b_remove, "x"), (self.b_up, "up"), (self.b_down, "down"),
+                       (self.b_moveto, "library"), (self.b_copyto, "plus"),
                        (self.b_edit, "tag"), (self.b_show, "search"), (self.b_discard, "undo"),
                        (self.b_saveas, "save")]
 
@@ -314,6 +407,7 @@ class RekordboxWindow(QDialog):
         self.tree.customContextMenuRequested.connect(self._tree_menu)
         self.tree.itemDoubleClicked.connect(lambda it, _c: self._rename(it.data(0, Qt.UserRole)))
         self.tree.moved.connect(self._move_node)
+        self.tree.tracks_dropped.connect(self._tracks_dropped)
         self.b_newpl.clicked.connect(lambda: self._create("playlist"))
         self.b_newfo.clicked.connect(lambda: self._create("folder"))
         self.b_add.clicked.connect(lambda: self.add_mog_selection())
@@ -443,7 +537,7 @@ class RekordboxWindow(QDialog):
         has = lib is not None
         matches = has and lib.kind == self._kind()
         for b in (self.b_newpl, self.b_newfo, self.b_add, self.b_remove, self.b_up, self.b_down, self.b_edit,
-                  self.b_show, self.tree, self.table):
+                  self.b_show, self.b_moveto, self.b_copyto, self.tree, self.table):
             b.setEnabled(matches)
         if has and not matches:
             self.lbl_src.setText(f"Geladen ist: {lib.label} – zum Wechseln oben laden")
@@ -534,8 +628,10 @@ class RekordboxWindow(QDialog):
             self.model.set_rows(rows, in_mog, sortable=False)
             self.table.horizontalHeader().setSortIndicatorShown(False)
         is_pl = node != COLLECTION and node.kind == "playlist"
-        for b in (self.b_remove, self.b_up, self.b_down):
-            b.setEnabled(is_pl)
+        for b in (self.b_remove, self.b_up, self.b_down, self.b_moveto):
+            b.setEnabled(is_pl and node.editable)
+        self.b_copyto.setEnabled(True)
+        self.tree.source_node = node
         self.b_add.setEnabled(node == COLLECTION or is_pl)
 
     def _selected_tracks(self):
@@ -689,9 +785,71 @@ class RekordboxWindow(QDialog):
         m = QMenu(self)
         m.addAction(icon("tag"), "Bearbeiten …", lambda: self._edit_selected())
         m.addAction(icon("search"), "In MOG zeigen", lambda: self._show_in_mog())
-        if node not in (None, COLLECTION) and node.kind == "playlist":
+        is_pl = node not in (None, COLLECTION) and node.kind == "playlist" and node.editable
+        m.addSeparator()
+        if is_pl:
+            self._fill_target_menu(m.addMenu(icon("library"), f"{len(ts)} Titel verschieben nach"), copy=False)
+        self._fill_target_menu(m.addMenu(icon("plus"), f"{len(ts)} Titel kopieren nach"), copy=True)
+        if is_pl:
+            m.addSeparator()
             m.addAction(icon("x"), "Aus Playlist entfernen", lambda: self._remove_selected())
         m.exec(self.table.viewport().mapToGlobal(pos))
+
+    # ------------------------------------------------------------------ Verschieben / Kopieren
+    def _fill_target_menu(self, menu, copy):
+        menu.clear()
+        lib = self.lib
+        cur = self._node()
+        if lib is None:
+            return
+        menu.addAction(icon("plus"), "Neue Playlist …", lambda: self._transfer_new(copy))
+        targets = [n for n in lib.playlists() if n.kind == "playlist" and n.editable and n is not cur]
+        if targets:
+            menu.addSeparator()
+        for n in targets[:80]:
+            menu.addAction(icon("library"), n.path_name(), lambda n=n: self._transfer(n, copy))
+        if len(targets) > 80:
+            a = menu.addAction(f"… und {len(targets) - 80} weitere (Titel links auf die Playlist ziehen)")
+            a.setEnabled(False)
+
+    def _transfer_new(self, copy):
+        name, ok = QInputDialog.getText(self, "Neue Playlist", "Name:", text="Neue Playlist")
+        if not ok or not name.strip():
+            return
+        cur = self._node()
+        parent = cur.parent if cur not in (None, COLLECTION) and cur.parent is not None and \
+            cur.parent.kind != "root" else None
+        try:
+            node = self.lib.create_playlist(parent, name.strip())
+        except rbmod.RekordboxError as e:
+            QMessageBox.warning(self, "rekordbox", str(e))
+            return
+        self._transfer(node, copy)
+
+    def _transfer(self, target, copy, ids=None):
+        src = self._node()
+        if ids is None:
+            ids = [t.id for t in self._selected_tracks()]
+        if not ids or self.lib is None:
+            return
+        if src in (None, COLLECTION) or getattr(src, "kind", "") != "playlist" or not src.editable:
+            copy = True
+        try:
+            added = self.lib.move_tracks(None if copy else src, target, ids, copy=copy)
+        except rbmod.RekordboxError as e:
+            QMessageBox.warning(self, "rekordbox", str(e))
+            return
+        self._changed()
+        self._fill_tree()
+        self._on_node()
+        dup = len(ids) - added
+        verb = "kopiert" if copy else "verschoben"
+        self.lbl_state.setText(f"{len(ids)} Titel nach „{target.path_name()}“ {verb}"
+                               + (f" ({dup} waren dort schon)" if dup else "")
+                               + f" · {self.lib.changes} ungespeicherte Änderung(en)")
+
+    def _tracks_dropped(self, target, ids, copy):
+        self._transfer(target, copy, ids)
 
     # ------------------------------------------------------------------ Speichern
     def save(self, ask_path=False):

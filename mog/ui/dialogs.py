@@ -164,6 +164,10 @@ def run_task(parent, title, fn, item_cb=None):
     if th.isRunning():
         dlg.label.setText("Wird abgebrochen …")
         th.wait(30000)
+    if item_cb:
+        # noch wartende Teilergebnisse (z. B. nach Abbruch) zustellen
+        from PySide6.QtCore import QCoreApplication
+        QCoreApplication.processEvents()
     if result["error"]:
         QMessageBox.warning(parent, title, result["error"])
     return result["value"]
@@ -204,9 +208,25 @@ class SettingsDialog(QDialog):
         self.cb_load.setToolTip("Aus: MOG startet mit leerer Ansicht, die Bibliothek lässt sich per Knopf laden.")
         self.cb_load.setChecked(self.s.get("startup/load_library"))
         gl2.addWidget(self.cb_load)
-        self.cb_update = QCheckBox("Beim Start nach Updates suchen (höchstens einmal täglich)")
+        urow = QHBoxLayout()
+        self.cb_update = QCheckBox("Automatisch nach Updates suchen:")
         self.cb_update.setChecked(self.s.get("update/auto"))
-        gl2.addWidget(self.cb_update)
+        self.cmb_update = QComboBox()
+        for hours, label in ((6, "bei jedem Start und alle 6 Stunden"), (24, "einmal täglich"),
+                             (168, "einmal pro Woche")):
+            self.cmb_update.addItem(label, hours)
+        self.cmb_update.setCurrentIndex(max(0, self.cmb_update.findData(int(self.s.get("update/interval") or 6))))
+        self.cmb_update.setEnabled(self.cb_update.isChecked())
+        self.cb_update.toggled.connect(self.cmb_update.setEnabled)
+        urow.addWidget(self.cb_update)
+        urow.addWidget(self.cmb_update)
+        urow.addStretch()
+        gl2.addLayout(urow)
+        uh = QLabel("Neue Versionen erscheinen als Hinweis oben neben der Versionsnummer und als "
+                    "Systembenachrichtigung.")
+        uh.setObjectName("Muted")
+        uh.setWordWrap(True)
+        gl2.addWidget(uh)
         f.addWidget(g2)
         g4 = QGroupBox("Darstellung")
         fl4 = QFormLayout(g4)
@@ -410,6 +430,7 @@ class SettingsDialog(QDialog):
         s.set("audio/backend", self.cmb_backend.currentData())
         s.set("startup/load_library", self.cb_load.isChecked())
         s.set("update/auto", self.cb_update.isChecked())
+        s.set("update/interval", int(self.cmb_update.currentData() or 6))
         s.set("bpm/range", self.cmb_range.currentText())
         s.set("bpm/round", self.cb_round.isChecked())
         s.set("key/notation", self.cmb_notation.currentData())

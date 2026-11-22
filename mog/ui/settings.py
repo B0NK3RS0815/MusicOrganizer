@@ -18,6 +18,8 @@ DEFAULTS = {
     "update/auto": True,
     "update/last_check": 0.0,
     "update/skip": "",
+    "update/interval": 6,          # Stunden zwischen zwei automatischen Prüfungen
+    "update/notified": "",         # Version, für die schon benachrichtigt wurde
     "tools/ffmpeg": "",
     "tools/fpcalc": "",
     "online/contact": "",

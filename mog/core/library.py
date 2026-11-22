@@ -30,6 +30,12 @@ CREATE TABLE IF NOT EXISTS roots (
 CREATE TABLE IF NOT EXISTS dup_ignore (
     ids TEXT PRIMARY KEY
 );
+CREATE TABLE IF NOT EXISTS loudness (
+    track_id INTEGER PRIMARY KEY,
+    lufs REAL, peak REAL, lra REAL, measured REAL,
+    gain REAL DEFAULT 0,          -- von MOG bereits angewendete Pegeländerung (dB, aufsummiert)
+    method TEXT
+);
 CREATE TABLE IF NOT EXISTS pending (
     track_id INTEGER NOT NULL,
     field TEXT NOT NULL,
@@ -148,6 +154,7 @@ class Library:
         with self.con:
             self.con.executemany("DELETE FROM tracks WHERE id=?", [(i,) for i in ids])
             self.con.executemany("DELETE FROM pending WHERE track_id=?", [(i,) for i in ids])
+            self.con.executemany("DELETE FROM loudness WHERE track_id=?", [(i,) for i in ids])
 
     def delete_under(self, root):
         root = norm_path(root)
@@ -165,6 +172,7 @@ class Library:
             self.con.execute("DELETE FROM roots")
             self.con.execute("DELETE FROM pending")
             self.con.execute("DELETE FROM dup_ignore")
+            self.con.execute("DELETE FROM loudness")
             self.con.execute("DELETE FROM sqlite_sequence WHERE name='tracks'")
         self.con.execute("VACUUM")
 
@@ -214,6 +222,28 @@ class Library:
             with self.con:
                 self.con.executemany("UPDATE tracks SET created=? WHERE id=?", rows)
         return len(rows)
+
+    # --- Lautheit -----------------------------------------------------------
+    def loudness_map(self):
+        """track_id -> (lufs, peak, lra, gain, method)"""
+        return {r[0]: tuple(r[1:]) for r in
+                self.con.execute("SELECT track_id, lufs, peak, lra, gain, method FROM loudness")}
+
+    def set_loudness(self, rows):
+        """rows: [(track_id, lufs, peak, lra)] – eine bereits angewendete Änderung bleibt vermerkt."""
+        now = time.time()
+        with self.con:
+            self.con.executemany(
+                "INSERT INTO loudness (track_id, lufs, peak, lra, measured, gain) VALUES (?, ?, ?, ?, ?, 0) "
+                "ON CONFLICT(track_id) DO UPDATE SET lufs=excluded.lufs, peak=excluded.peak, "
+                "lra=excluded.lra, measured=excluded.measured",
+                [(i, lufs, peak, lra, now) for i, lufs, peak, lra in rows])
+
+    def add_gain(self, track_id, gain, method):
+        """Vermerkt eine angewendete Pegeländerung; Messwerte werden entsprechend verschoben."""
+        with self.con:
+            self.con.execute("UPDATE loudness SET lufs=lufs+?, peak=peak+?, gain=ROUND(COALESCE(gain,0)+?, 4), "
+                             "method=? WHERE track_id=?", (gain, gain, gain, method, track_id))
 
     # --- Duplikate: „Kein Duplikat“ merken ---------------------------------
     def dup_ignored(self):

@@ -134,6 +134,9 @@ QToolButton#HeaderButton:pressed {{ background: {C['border']}; }}
 QToolButton#HeaderButton::menu-indicator {{ image: none; }}
 
 QLabel#VersionLabel {{ color: {C['text3']}; font-size: 11px; font-weight: 600; padding: 0 0 9px 4px; }}
+QPushButton#UpdatePill {{ background: {C['accent2']}; color: #FFFFFF; border: none; border-radius: 10px;
+    padding: 3px 11px; font-size: 11px; font-weight: 700; margin: 0 0 7px 8px; }}
+QPushButton#UpdatePill:hover {{ background: {C['accent']}; }}
 QLabel#Credit {{ color: {C['text3']}; font-size: 11px; padding: 0 10px 0 12px; letter-spacing: 0.5px; }}
 QFrame#HeaderSep {{ background: {C['border']}; max-width: 1px; min-width: 1px; margin: 10px 4px; }}
 

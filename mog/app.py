@@ -53,10 +53,13 @@ def _selftest(out_path):
 
     def mog_modules():
         from mog import __version__
-        from mog.core import keydetect, rekordbox, waveform  # noqa: F401
+        from mog.core import keydetect, loudness, rekordbox, waveform  # noqa: F401
         x = rekordbox.XmlLibrary.new(__version__)
-        x.create_playlist(None, "Test")
-        return f"{__version__}, Tonart {keydetect.to_camelot('A minor')}"
+        a, b = x.create_playlist(None, "A"), x.create_playlist(None, "B")
+        x.move_tracks(a, b, [])
+        import numpy  # noqa: F401  (für WAV/AIFF-Pegel)
+        return (f"{__version__}, Tonart {keydetect.to_camelot('A minor')}, "
+                f"Lautheit {loudness.method_for('MP3')}/{loudness.method_for('FLAC')}")
 
     check("sqlcipher3", sqlcipher)
     check("pyrekordbox", pyrekordbox)

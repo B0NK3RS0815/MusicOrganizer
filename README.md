@@ -4,7 +4,7 @@ Musikarchiv-Verwaltung für DJs – für **Windows 10/11 x64** und **macOS Sequo
 
 ![MOG Logo](mog/resources/mog_icon_256.png)
 
-## Funktionen (Version 1.0)
+## Funktionen (Version 1.1)
 
 Alle Änderungen je Version: siehe [CHANGELOG.md](CHANGELOG.md).
 
@@ -18,14 +18,15 @@ Alle Änderungen je Version: siehe [CHANGELOG.md](CHANGELOG.md).
 | **Tags** | Editor für einen oder viele Titel (Stapelbearbeitung), Cover laden/entfernen, „Aus Dateiname“, Artist ↔ Titel tauschen |
 | **Online-Tags** | MusicBrainz, Discogs (ideal für Label/Genre/Stil), Spotify, AcoustID (Erkennung am Klang). Auswählbar, welche Felder übernommen werden; Cover-Übernahme. |
 | **Analyse** | Lokale BPM-Analyse mit rekordbox-ähnlichen Bereichen (z. B. 78–155, 88–175) und Tonart-Erkennung – Anzeige wahlweise Camelot (8A), klassisch (Am) oder beides; Sortierung nach Camelot-Rad |
-| **rekordbox** | Zwei Varianten, umschaltbar: **XML** (offiziell, sicher – rekordbox liest die Datei als „rekordbox xml“ ein) oder **Datenbank** (direkt in rekordbox' `master.db`, inoffiziell; rekordbox muss beim Speichern geschlossen sein, vor jedem Speichern wird eine Sicherung angelegt). Playlists und Ordner anlegen, umbenennen, verschieben, löschen, Titel per Rechtsklick aus MOG hinzufügen, Reihenfolge ändern, Titel-Infos (Artist, Titel, BPM, Tonart, Bewertung, Kommentar …) bearbeiten. Umbenennen/Verschieben in MOG zieht die Pfade in rekordbox mit, beim Löschen warnt MOG vor Titeln, die in rekordbox-Playlists stecken. |
+| **Lautstärke** | Lautheit messen nach EBU R128 (LUFS, True Peak; Spalte „Lautheit“) und alle Titel auf einen gemeinsamen Pegel bringen – Ziel automatisch („optimal für die Auswahl“) oder fest (z. B. −9, −14 LUFS), Peak-Grenze gegen Übersteuern, Vorschau je Titel. MP3 verlustfrei in 1,5-dB-Schritten (Prinzip mp3gain), WAV/AIFF direkt in der Datei, FLAC/ALAC verlustfrei neu kodiert, Opus über den Kopf; AAC/OGG/WMA nur auf Wunsch per Neukodierung. Alternativ nur ReplayGain-Tags. Tags, Cover, Cue-Punkte und Erstellungsdatum bleiben erhalten; verlustfreie Änderungen lassen sich zurücknehmen. |
+| **rekordbox** | Zwei Varianten, umschaltbar: **XML** (offiziell, sicher – rekordbox liest die Datei als „rekordbox xml“ ein) oder **Datenbank** (direkt in rekordbox' `master.db`, inoffiziell; rekordbox muss beim Speichern geschlossen sein, vor jedem Speichern wird eine Sicherung angelegt). Playlists und Ordner anlegen, umbenennen, verschieben, löschen, Titel per Rechtsklick aus MOG hinzufügen, Reihenfolge ändern, Titel-Infos (Artist, Titel, BPM, Tonart, Bewertung, Kommentar …) bearbeiten. Umbenennen/Verschieben in MOG zieht die Pfade in rekordbox mit, beim Löschen warnt MOG vor Titeln, die in rekordbox-Playlists stecken. Titelliste mit Bitrate (kbps); markierte Titel per Knopf, Rechtsklick oder Ziehen in eine andere Playlist verschieben (mit Strg: kopieren). |
 | **Konvertieren** | ffmpeg ist eingebaut: MP3 320/V0/256/192, AAC, ALAC, FLAC, WAV/AIFF 16/24 Bit, Ogg, Opus. Tags & Cover werden übernommen, parallele Verarbeitung. |
 | **Große Archive** | Schnell auch bei 350.000+ Titeln: Bibliothek lädt im Hintergrund, Sortieren und Suchen in Sekundenbruchteilen. „Bibliothek → Bibliothek leeren“ setzt alles zurück (Dateien bleiben unberührt). |
 | **Ungespeicherte Änderungen** | Tag-, Online- und BPM-Änderungen werden vorgemerkt (orange), mit „Speichern“ (Strg+S) oder beim Beenden nach Rückfrage in die Dateien geschrieben – oder verworfen. |
 | **Dateinamen** | Umbenennen (F2) einzeln oder per Muster aus den Tags, mit Vorschau und Prüfung |
 | **Spalten** | Breite und Reihenfolge frei veränderbar (Drag & Drop oder Rechtsklick auf den Spaltenkopf) |
 | **Darstellung** | Dunkel, Hell oder „Wie System“ (Extras → Darstellung) |
-| **Updates** | Prüft beim Start auf neue Versionen und installiert sie auf Wunsch (Extras → Nach Updates suchen) |
+| **Updates** | Sucht automatisch nach neuen Versionen (beim Start und alle 6 Stunden, täglich oder wöchentlich – Extras → Einstellungen). Neue Versionen erscheinen als Hinweis „Update“ neben der Versionsnummer und als Systembenachrichtigung; Installation mit einem Klick. Manuell: Extras → Nach Updates suchen |
 | **Player** | Integriert (Qt Multimedia/FFmpeg), spielt alle Formate. Farbige Wellenform (Bass/Mitten/Höhen) zum Spulen per Klick, wird zwischengespeichert. Leertaste = Play/Pause, Enter = Abspielen, Alt+←/→ = 10 s spulen. Ausgabegerät, Testton und Wiedergabe-Technik unter Extras → Einstellungen → Audio. |
 
 **Tastenkürzel:** Strg/⌘+F Suche · Strg/⌘+E Tags · F2 Umbenennen · Strg/⌘+S Speichern · Strg/⌘+K Online-Tags · Strg/⌘+D Duplikate · Strg/⌘+R rekordbox · Strg/⌘+O Ordner · Entf Löschen · Strg/⌘+Q Beenden
@@ -85,6 +86,7 @@ mog/
     encoder.py         ffmpeg-Konvertierung
     bpm.py             BPM-Analyse
     keydetect.py       Tonart-Erkennung, Camelot
+    loudness.py        Lautheit messen (EBU R128) und angleichen (MP3 verlustfrei, WAV/AIFF, FLAC …)
     waveform.py        Wellenform berechnen und zwischenspeichern
     rekordbox.py       rekordbox-XML und -Datenbank (master.db)
     fingerprint.py     Chromaprint/fpcalc
@@ -107,6 +109,7 @@ python tests/test_core.py /tmp/mog_samples         # Tags, Cover, Konvertierung,
 QT_QPA_PLATFORM=offscreen MOG_NO_AUDIO=1 python tests/ui_smoke.py /tmp/mog_samples /tmp/shots
 python tests/test_rekordbox.py /tmp/mog_samples [rekordbox.xml] [master.db-Ordner]
 QT_QPA_PLATFORM=offscreen MOG_NO_AUDIO=1 python tests/ui_v030.py /tmp/mog_samples /tmp/shots3 [master.db-Ordner]
+QT_QPA_PLATFORM=offscreen MOG_NO_AUDIO=1 python tests/ui_v110.py /tmp/mog_samples /tmp/shots4 [master.db-Ordner]
 ```
 
 Das fertig gebaute Programm hat einen Prüfmodus: `MOG_SELFTEST=selftest.txt MusicOrganizer` lädt alle Zusatzmodule und schreibt das Ergebnis in die Datei (läuft auch beim GitHub-Build).

@@ -37,6 +37,7 @@ COLUMNS = [
     ("filename", "Dateiname", False, 260, Qt.AlignLeft),
     ("path", "Pfad", False, 380, Qt.AlignLeft),
     ("created", "Erstellt", False, 128, Qt.AlignRight),
+    ("lufs", "Lautheit", True, 84, Qt.AlignRight),
 ]
 COL_INDEX = {c[0]: i for i, c in enumerate(COLUMNS)}
 
@@ -64,6 +65,7 @@ SORT_KEYS = {
     "path": lambda t: _low(t.path),
     "created": lambda t: t.created or 0.0,
     "rb": lambda t: 0,      # wird im Modell über rb_info ersetzt
+    "lufs": lambda t: 0,    # wird im Modell über loud ersetzt
 }
 
 VIEWS = {
@@ -97,6 +99,7 @@ class TrackModel(QAbstractTableModel):
         self.view_row = {}
         self.pending = {}        # track_id -> {geänderte Felder}
         self.rb_info = {}        # track_id -> [Playlist-Namen] (Titel ist in rekordbox)
+        self.loud = {}           # track_id -> (lufs, peak, lra, gain, method)
         self.playing_id = None
         self._search_cache = {}
         self._words = []
@@ -241,6 +244,12 @@ class TrackModel(QAbstractTableModel):
         if self.view:
             self.dataChanged.emit(self.index(0, c), self.index(len(self.view) - 1, c))
 
+    def set_loudness(self, loud):
+        self.loud = loud
+        c = COL_INDEX["lufs"]
+        if self.view:
+            self.dataChanged.emit(self.index(0, c), self.index(len(self.view) - 1, c))
+
     def retheme(self):
         self._pending_col = QColor(C["accent2"])
         self.layoutChanged.emit()
@@ -250,6 +259,9 @@ class TrackModel(QAbstractTableModel):
         if col == "rb":
             info = self.rb_info
             key = lambda t: (t.id not in info, -len(info.get(t.id, [])))  # noqa: E731
+        elif col == "lufs":
+            loud = self.loud
+            key = lambda t: (t.id not in loud, loud[t.id][0] if t.id in loud else 0.0)  # noqa: E731
         else:
             key = SORT_KEYS[col]
         lst.sort(key=key, reverse=(self._sort_order == Qt.DescendingOrder))
@@ -351,6 +363,9 @@ class TrackModel(QAbstractTableModel):
                 if pl is None:
                     return ""
                 return f"● {len(pl)}" if pl else "●"
+            if key == "lufs":
+                v = self.loud.get(t.id)
+                return f"{v[0]:.1f}".replace(".", ",").replace("-", "−") if v and v[0] is not None else ""
             return getattr(t, key, "") or ""
         if role == TrackRole:
             return t
@@ -366,7 +381,9 @@ class TrackModel(QAbstractTableModel):
                 return quality_color(t)
             if key == "rb" and t.id in self.rb_info:
                 return QColor(C["ok"])
-            if key in ("bpm", "duration", "key", "year", "samplerate", "size", "created"):
+            if key == "lufs" and t.id in self.loud and self.loud[t.id][3]:
+                return QColor(C["ok"])
+            if key in ("bpm", "duration", "key", "year", "samplerate", "size", "created", "lufs"):
                 return QColor(C["text2"])
             if key == "artist" and t.tags_missing:
                 return QColor(C["text2"])
@@ -403,6 +420,15 @@ class TrackModel(QAbstractTableModel):
                     return "Niedrige Qualität – für Clubanlagen nicht empfehlenswert"
                 if kbps and kbps < 250:
                     return "Mittlere Qualität"
+            if key == "lufs":
+                v = self.loud.get(t.id)
+                if not v or v[0] is None:
+                    return "Noch nicht gemessen – Analyse → Lautheit messen"
+                lufs, peak, lra, gain, _m = v
+                tip = (f"Lautheit: {lufs:.1f} LUFS\nTrue Peak: {peak:.1f} dBTP\nDynamik (LRA): {lra or 0:.1f} LU")
+                if gain:
+                    tip += f"\nVon MOG angeglichen um {gain:+.1f} dB"
+                return tip.replace(".", ",")
             if key in ("artist", "title") and t.tags_missing:
                 return "Keine Tags – Werte aus dem Dateinamen abgeleitet"
             if key in ("path", "filename", "title"):

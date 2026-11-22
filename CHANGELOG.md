@@ -1,5 +1,21 @@
 # Änderungen
 
+## 1.1.0
+- **Lautstärke angleichen** (Analyse → „Lautheit messen“ und „Lautstärke angleichen …“, auch per Rechtsklick):
+  - Messung nach EBU R128: integrierte Lautheit (LUFS), True Peak und Dynamik – mehrere Titel parallel. Neue Spalte „Lautheit“.
+  - Zielpegel automatisch („optimal für diese Auswahl“: so laut wie möglich, ohne dass mehr als 10 % der Titel die Peak-Grenze überschreiten würden) oder fest: −9 LUFS (Club), −11, −14 (Streaming), −18 (ReplayGain) oder eigener Wert. Peak-Grenze (Standard −1 dBTP) verhindert Übersteuern; Option „nur leiser machen“.
+  - Vorschau je Titel mit Änderung in dB, Ergebnis und Hinweisen, bevor etwas geändert wird.
+  - Je Format der schonendste Weg: MP3 verlustfrei in 1,5-dB-Schritten (Prinzip mp3gain), WAV/AIFF direkt in der Datei, FLAC/ALAC verlustfrei neu kodiert, Opus verlustfrei über den Kopf. AAC, OGG und WMA nur auf ausdrücklichen Wunsch per Neukodierung (Qualitätsverlust).
+  - Tags, Cover, Cue-Punkte und Erstellungsdatum bleiben erhalten. Optional Sicherungskopien der Originale.
+  - „Pegeländerung zurücknehmen“ für verlustfrei geänderte Titel.
+  - Alternativ nur ReplayGain-Tags schreiben (Dateien bleiben unverändert).
+  - Hinweis, wenn betroffene Titel in rekordbox stecken (dort neu analysieren lassen).
+- **rekordbox-Fenster:**
+  - Neue Spalte „kbps“ (Bitrate) in der Titelliste – aus rekordbox oder, falls dort leer, aus der MOG-Bibliothek; niedrige Bitraten farbig markiert.
+  - Markierte Titel in eine andere Playlist **verschieben** oder **kopieren**: Knöpfe „Verschieben nach …“/„Kopieren nach …“, Rechtsklick oder per Ziehen auf eine Playlist links (mit Strg: kopieren). Titel, die im Ziel schon stehen, werden nicht doppelt angelegt. Funktioniert mit XML und Datenbank.
+- **Updates:** automatische Prüfung jetzt beim Start und regelmäßig während MOG läuft (alle 6 Stunden, täglich oder wöchentlich – Extras → Einstellungen). Neue Versionen erscheinen als Hinweis „Update“ neben der Versionsnummer und als Systembenachrichtigung; beim Start öffnet sich einmalig der Update-Dialog.
+- Macs mit Apple-Chip erhalten jetzt automatisch eine eigene Version (`…-macOS-arm64.dmg`); die Update-Funktion wählt sie selbst.
+
 ## 1.0.0
 - **rekordbox-Anbindung** (Knopf „rekordbox“, Strg+R) in zwei umschaltbaren Varianten:
   - **XML (offiziell, sicher):** rekordbox-XML öffnen oder neu anlegen, bearbeiten und speichern. Einlesen in rekordbox über Einstellungen → Erweitert → Datenbank → „rekordbox xml“. Cue-Punkte, Beatgrid und alle anderen Inhalte der Datei bleiben erhalten.

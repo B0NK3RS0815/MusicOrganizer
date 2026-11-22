@@ -48,6 +48,7 @@ class RBTrack:
     rating: int = 0          # 0–5 Sterne
     length: int = 0          # Sekunden
     year: str = ""
+    bitrate: int = 0         # kbps
 
     EDITABLE = ("title", "artist", "album", "genre", "label", "comment", "bpm", "key", "rating", "year")
 
@@ -161,6 +162,18 @@ class RekordboxLibrary:
         return out
 
     # --- Gemeinsame Hilfen --------------------------------------------------
+    def move_tracks(self, src, dst, track_ids, copy=False):
+        """Titel von Playlist src nach Playlist dst verschieben (copy=True: kopieren).
+        Titel, die im Ziel schon stehen, werden nicht doppelt angelegt. Gibt die Zahl neu im Ziel zurück."""
+        self._check_editable(dst)
+        if dst.kind != "playlist":
+            raise RekordboxError("Ziel muss eine Playlist sein.")
+        ids = [t for t in track_ids if t in self.tracks]
+        added = self.add_to_playlist(dst, ids)
+        if not copy and src is not None and src is not dst and getattr(src, "kind", "") == "playlist":
+            self.remove_from_playlist(src, ids)
+        return added
+
     def _check_editable(self, node):
         if node is None or (node.kind != "root" and not node.editable):
             raise RekordboxError("Intelligente oder System-Playlists können nicht bearbeitet werden.")
@@ -239,7 +252,8 @@ class XmlLibrary(RekordboxLibrary):
                     genre=el.get("Genre", ""), label=el.get("Label", ""), comment=el.get("Comments", ""),
                     bpm=_float(el.get("AverageBpm")), key=el.get("Tonality", ""),
                     rating=rating_from_xml(el.get("Rating")), length=_int(el.get("TotalTime")),
-                    year=el.get("Year", "") if el.get("Year", "0") != "0" else "")
+                    year=el.get("Year", "") if el.get("Year", "0") != "0" else "",
+                    bitrate=_int(el.get("BitRate")))
                 lib.tracks[tid] = t
                 lib.track_el[tid] = el
                 loc_to_id[el.get("Location", "")] = tid
@@ -346,7 +360,8 @@ class XmlLibrary(RekordboxLibrary):
         t = RBTrack(id=tid, path=mog_track.path, title=mog_track.display_title, artist=mog_track.artist,
                     album=mog_track.album, genre=mog_track.genre, label=mog_track.label,
                     comment=mog_track.comment, bpm=mog_track.bpm, key=mog_track.key,
-                    length=int(mog_track.duration or 0), year=mog_track.year or "")
+                    length=int(mog_track.duration or 0), year=mog_track.year or "",
+                    bitrate=round((mog_track.bitrate or 0) / 1000))
         coll = self.tree.getroot().find("COLLECTION")
         el = ET.SubElement(coll, "TRACK", TrackID=tid)
         el.set("Kind", _KIND.get(mog_track.fmt, f"{mog_track.fmt} File"))
@@ -563,7 +578,7 @@ class DbLibrary(RekordboxLibrary):
             label=c.LabelName or "", comment=c.Commnt or "",
             bpm=(c.BPM / 100.0) if c.BPM else None, key=c.KeyName or "",
             rating=int(c.Rating or 0), length=int(c.Length or 0),
-            year=str(c.ReleaseYear) if c.ReleaseYear else "")
+            year=str(c.ReleaseYear) if c.ReleaseYear else "", bitrate=int(c.BitRate or 0))
 
     # --- Playlists ---------------------------------------------------------
     def _parent_obj(self, node):

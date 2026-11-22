@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QFileDialog, QFrame, QGridLayo
 
 from mog import APP_NAME, __version__
 from mog.core import bpm as bpmmod, encoder, fileops, pending as pendingmod, scanner, tags as tagio
-from mog.core import keydetect, rekordbox as rbmod, updater, waveform
+from mog.core import keydetect, loudness as loudmod, rekordbox as rbmod, updater, waveform
 from mog.core.formats import dialog_filter
 from mog.core.library import Library
 from mog.core.track import format_bpm, format_duration, format_size
@@ -20,6 +20,7 @@ from mog.core.track import format_bpm, format_duration, format_size
 from .convert_dialog import ConvertDialog
 from .dialogs import DeleteDialog, SettingsDialog, VolumeDialog, run_task
 from .duplicates_dialog import DuplicatesDialog
+from .loudness_dialog import MODE_RG, LoudnessDialog, backup_target
 from .icons import icon, logo_pixmap, placeholder_cover, svg_pixmap
 from .online_dialog import OnlineTagDialog
 from .player import PlayerBar
@@ -57,6 +58,11 @@ class HeaderBar(QWidget):
         self.version.setObjectName("VersionLabel")
         self.version.setToolTip(f"{APP_NAME} – Version {__version__}")
         self.lay.addWidget(self.version, 0, Qt.AlignBottom)
+        self.update_pill = QPushButton("")
+        self.update_pill.setObjectName("UpdatePill")
+        self.update_pill.setCursor(Qt.PointingHandCursor)
+        self.update_pill.hide()
+        self.lay.addWidget(self.update_pill, 0, Qt.AlignBottom)
         self.lay.addSpacing(14)
 
     def button(self, name, text, tip, slot=None, menu=None):
@@ -259,7 +265,11 @@ class MainWindow(QMainWindow):
         an_menu.addAction(icon("pulse"), "BPM analysieren", self.analyze_bpm)
         an_menu.addAction(icon("key"), "Tonart analysieren (Camelot)", self.analyze_key)
         an_menu.addAction(icon("pulse"), "BPM und Tonart analysieren", lambda: self.analyze_bpm(then_key=True))
-        h.button("pulse", "Analyse", "BPM und Tonart der markierten Titel ermitteln", menu=an_menu)
+        an_menu.addSeparator()
+        an_menu.addAction(icon("volume"), "Lautheit messen (LUFS)", lambda: self.measure_loudness())
+        an_menu.addAction(icon("volume"), "Lautstärke angleichen …", lambda: self.normalize_loudness())
+        an_menu.addAction(icon("undo"), "Pegeländerung zurücknehmen …", lambda: self.undo_loudness())
+        h.button("pulse", "Analyse", "BPM, Tonart und Lautheit der markierten Titel ermitteln", menu=an_menu)
         h.button("convert", "Konvertieren", "Markierte Titel mit ffmpeg umwandeln", self.open_convert)
         h.button("rekordbox", "rekordbox", "rekordbox-Playlists bearbeiten (XML oder Datenbank) – Strg+R",
                  lambda: self.open_rekordbox())
@@ -411,8 +421,16 @@ class MainWindow(QMainWindow):
         else:
             self._update_counts()
             self._rebuild_sidebar()
+        self._update_info = None
+        self._tray = None
+        self.header.update_pill.clicked.connect(lambda: self._show_update_dialog())
         if self.s.get("update/auto"):
-            QTimer.singleShot(3000, lambda: self.check_updates(manual=False))
+            QTimer.singleShot(3000, lambda: self.check_updates(manual=False, startup=True))
+        # Während MOG läuft regelmäßig nachsehen (fällig laut eingestelltem Intervall)
+        self._update_timer = QTimer(self)
+        self._update_timer.setInterval(30 * 60 * 1000)
+        self._update_timer.timeout.connect(lambda: self.s.get("update/auto") and self.check_updates(manual=False))
+        self._update_timer.start()
 
     # ------------------------------------------------------------------ UI-Aufbau
     def _build_sidebar(self):
@@ -587,6 +605,7 @@ class MainWindow(QMainWindow):
         t0 = time.time()
         self._loaded = True
         self.model.set_tracks(tracks)
+        self.model.set_loudness(self.lib.loudness_map())
         self._refresh_pending()
         self._rebuild_sidebar()
         self.empty_title.setText("Willkommen bei MusicOrganizer")
@@ -892,6 +911,7 @@ class MainWindow(QMainWindow):
         self.lib.clear_all()
         self._loaded = True
         self.model.set_tracks([])
+        self.model.set_loudness({})
         self._refresh_pending()
         self._rebuild_sidebar()
         self._update_counts()
@@ -976,6 +996,8 @@ class MainWindow(QMainWindow):
         m.addAction(icon("globe"), "Tags online suchen …\tStrg+K", self.open_online)
         m.addAction(icon("pulse"), "BPM analysieren", self.analyze_bpm)
         m.addAction(icon("key"), "Tonart analysieren", self.analyze_key)
+        m.addAction(icon("volume"), "Lautheit messen", lambda: self.measure_loudness())
+        m.addAction(icon("volume"), "Lautstärke angleichen …", lambda: self.normalize_loudness())
         rbm = m.addMenu(icon("rekordbox"), "Zu rekordbox hinzufügen")
         if self.rb is None:
             rbm.addAction("rekordbox öffnen …", lambda: self.open_rekordbox())
@@ -1258,6 +1280,198 @@ class MainWindow(QMainWindow):
             f"Tonart für {n} Titel ermittelt – wird beim Speichern bzw. Beenden in die Dateien geschrieben."
             + (f" {fails} ohne Ergebnis." if fails else ""), 10000)
 
+    # ------------------------------------------------------------------ Lautheit
+    def _ffmpeg_or_warn(self, title):
+        ff = encoder.find_ffmpeg(self.s.get("tools/ffmpeg") or None)
+        if not ff:
+            QMessageBox.warning(self, title, "ffmpeg wurde nicht gefunden (Einstellungen → Encoder).")
+        return ff
+
+    def measure_loudness(self, tracks=None, ask_overwrite=True):
+        """Misst die Lautheit (EBU R128) – parallel im Hintergrund. Gibt die Zahl der Messungen zurück."""
+        ts = tracks if tracks is not None else self._need_selection("Lautheit messen")
+        ts = [t for t in ts if not t.missing]
+        if not ts:
+            return 0
+        ff = self._ffmpeg_or_warn("Lautheit messen")
+        if not ff:
+            return 0
+        loud = self.model.loud
+        done = [t for t in ts if t.id in loud and loud[t.id][0] is not None]
+        todo = ts
+        if done and ask_overwrite:
+            r = QMessageBox.question(self, "Lautheit messen",
+                                     f"{len(done)} von {len(ts)} Titeln sind bereits gemessen.\n\nErneut messen?",
+                                     QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel, QMessageBox.No)
+            if r == QMessageBox.Cancel:
+                return 0
+            if r == QMessageBox.No:
+                todo = [t for t in ts if t not in done]
+        elif done:
+            todo = [t for t in ts if t not in done]
+        if not todo:
+            return 0
+        items = [(t.id, t.path, t.display_artist, t.display_title) for t in todo]
+        workers = max(1, min(4, (os.cpu_count() or 2) - 1))
+        got, errors = [], []
+
+        def job(progress, cancel, emit):
+            from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+            n = len(items)
+            it = iter(items)
+            running = {}
+            finished = 0
+            with ThreadPoolExecutor(max_workers=workers) as ex:
+                def submit():
+                    nxt = next(it, None)
+                    if nxt is not None:
+                        running[ex.submit(loudmod.measure, ff, nxt[1])] = nxt
+                for _ in range(workers * 2):
+                    submit()
+                while running:
+                    fin, _ = wait(list(running), timeout=0.5, return_when=FIRST_COMPLETED)
+                    for fut in fin:
+                        tid, _p, a, ti = running.pop(fut)
+                        finished += 1
+                        try:
+                            lufs, peak, lra = fut.result()
+                            emit(("ok", tid, lufs, peak, lra))
+                        except Exception as e:
+                            emit(("err", tid, f"{a} – {ti}: {e}"))
+                        progress(finished, n, f"{a} – {ti}")
+                        if not cancel.is_set():
+                            submit()
+            return finished
+
+        def on_item(r):
+            if r[0] == "ok":
+                got.append(r[1:])
+            else:
+                errors.append(r[2])
+
+        run_task(self, f"Messe Lautheit ({workers} parallel) …", job, item_cb=on_item)
+        if got:
+            self.lib.set_loudness(got)
+            self.model.set_loudness(self.lib.loudness_map())
+        self.statusBar().showMessage(f"Lautheit von {len(got)} Titel(n) gemessen."
+                                     + (f" {len(errors)} Fehler." if errors else ""), 10000)
+        if errors and tracks is None:
+            QMessageBox.warning(self, "Lautheit messen", f"{len(errors)} Titel konnten nicht gemessen werden:\n\n"
+                                + "\n".join(errors[:12]))
+        if self.table.isColumnHidden(COL_INDEX["lufs"]):
+            self.table.setColumnHidden(COL_INDEX["lufs"], False)
+        return len(got)
+
+    def normalize_loudness(self):
+        ts = [t for t in self._need_selection("Lautstärke angleichen") if not t.missing]
+        if not ts:
+            return
+        if not self._ffmpeg_or_warn("Lautstärke angleichen"):
+            return
+        loud = self.model.loud
+        missing = [t for t in ts if t.id not in loud or loud[t.id][0] is None]
+        if missing:
+            r = QMessageBox.question(self, "Lautstärke angleichen",
+                                     f"{len(missing)} von {len(ts)} Titeln sind noch nicht gemessen.\n"
+                                     "Jetzt messen? (Ohne Messung werden sie übersprungen.)",
+                                     QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel, QMessageBox.Yes)
+            if r == QMessageBox.Cancel:
+                return
+            if r == QMessageBox.Yes:
+                self.measure_loudness(missing, ask_overwrite=False)
+        dlg = LoudnessDialog(ts, self.model.loud, self.s, rb_ids=self.model.rb_info.keys(), parent=self)
+        if not dlg.exec():
+            return
+        self._apply_loudness(dlg.plan_items(), dlg.mode, dlg.backup_dir)
+
+    def undo_loudness(self):
+        ts = [t for t in self._need_selection("Pegeländerung zurücknehmen") if not t.missing]
+        loud = self.model.loud
+        items = [(t, loud[t.id][4], -loud[t.id][3]) for t in ts
+                 if t.id in loud and loud[t.id][3] and loud[t.id][4] in loudmod.LOSSLESS_METHODS]
+        lossy = [t for t in ts if t.id in loud and loud[t.id][3] and loud[t.id][4] == loudmod.M_REENCODE]
+        if not items:
+            QMessageBox.information(self, "Pegeländerung zurücknehmen",
+                                    "Bei den markierten Titeln gibt es keine von MOG verlustfrei geänderte Lautstärke."
+                                    + (f"\n\n{len(lossy)} Titel wurden neu kodiert – das lässt sich nicht verlustfrei "
+                                       "zurücknehmen." if lossy else ""))
+            return
+        if QMessageBox.question(self, "Pegeländerung zurücknehmen",
+                                f"Bei {len(items)} Titel(n) die von MOG angewendete Pegeländerung zurücknehmen?"
+                                + (f"\n({len(lossy)} neu kodierte Titel werden übersprungen.)" if lossy else "")) \
+                != QMessageBox.Yes:
+            return
+        self._apply_loudness(items, "file", "")
+
+    def _apply_loudness(self, items, mode, backup_dir):
+        """items: [(track, method, gain)]"""
+        if not items:
+            return
+        ff = encoder.find_ffmpeg(self.s.get("tools/ffmpeg") or None)
+        for t, _m, _g in items:
+            if self.player.track and self.player.track.path == t.path:
+                self.player.stop()
+                self.player.release_file(t.path)
+        loud = dict(self.model.loud)
+        reencode = str(self.s.value("loud/reencode", "false")).lower() == "true" or \
+            any(m == loudmod.M_REENCODE for _t, m, _g in items)
+        work = [(t.id, t.path, t.fmt, t.bitrate, m, g, loud.get(t.id), f"{t.display_artist} – {t.display_title}")
+                for t, m, g in items]
+        results = []
+
+        def job(progress, cancel, emit):
+            import shutil
+            n = len(work)
+            for i, (tid, path, fmt, br, m, g, lv, label) in enumerate(work):
+                if cancel.is_set():
+                    break
+                progress(i, n, label)
+                try:
+                    if backup_dir and mode != MODE_RG:
+                        os.makedirs(backup_dir, exist_ok=True)
+                        shutil.copy2(path, backup_target(backup_dir, path))
+                    if mode == MODE_RG:
+                        loudmod.write_replaygain(path, lv[0], lv[1])
+                        emit(("rg", tid, 0.0, m))
+                    else:
+                        applied = loudmod.apply_gain(ff, path, fmt, g, allow_reencode=reencode, bitrate=br)
+                        emit(("ok", tid, applied, m))
+                except Exception as e:
+                    emit(("err", tid, f"{label}: {e}", m))
+            progress(n, n, "")
+            return True
+
+        run_task(self, "Gleiche Lautstärke an …" if mode != MODE_RG else "Schreibe ReplayGain-Tags …", job,
+                 item_cb=results.append)
+        ok = errs = 0
+        messages = []
+        changed = []
+        for kind, tid, val, m in results:
+            if kind == "err":
+                errs += 1
+                messages.append(val)
+                continue
+            ok += 1
+            if kind == "ok" and val:
+                self.lib.add_gain(tid, val, m)
+            t = self.model.by_id.get(tid)
+            if t is not None:
+                try:
+                    st = os.stat(t.path)
+                    t.size, t.mtime = st.st_size, st.st_mtime
+                    self.lib.update_fields(tid, size=t.size, mtime=t.mtime)
+                    changed.append(t)
+                except OSError:
+                    pass
+        self.model.set_loudness(self.lib.loudness_map())
+        if changed:
+            self.model.upsert(changed)
+        what = "mit ReplayGain-Tags versehen" if mode == MODE_RG else "angeglichen"
+        self.statusBar().showMessage(f"{ok} Titel {what}." + (f" {errs} Fehler." if errs else ""), 12000)
+        if messages:
+            QMessageBox.warning(self, "Lautstärke angleichen", f"{errs} Titel konnten nicht bearbeitet werden:\n\n"
+                                + "\n".join(messages[:12]))
+
     def open_convert(self):
         ts = self._need_selection("Konvertieren")
         if not ts:
@@ -1466,13 +1680,14 @@ class MainWindow(QMainWindow):
             self.rb_window._update_state()
 
     def rb_ids_in_mog(self):
+        """rekordbox-Track-ID -> Bitrate in kbps laut MOG (für Titel, die auch in MOG sind)."""
         if self.rb is None:
-            return set()
-        ids = set()
+            return {}
+        ids = {}
         for t in self.model.all:
             rt = self.rb.track_for_path(t.path)
             if rt is not None:
-                ids.add(rt.id)
+                ids[rt.id] = round((t.bitrate or 0) / 1000)
         return ids
 
     def reveal_in_list(self, path):
@@ -1543,29 +1758,89 @@ class MainWindow(QMainWindow):
             self.rb_window.retheme()
 
     # ------------------------------------------------------------------ Updates & Info
-    def check_updates(self, manual=False):
+    def check_updates(self, manual=False, startup=False):
         if not manual:
-            last = self.s.get("update/last_check")
-            if time.time() - float(last or 0) < 20 * 3600:
+            elapsed = time.time() - float(self.s.get("update/last_check") or 0)
+            hours = int(self.s.get("update/interval") or 6)
+            # „Bei jedem Start“ (6-Stunden-Takt): beim Start schon nach 1 Stunde wieder prüfen
+            due = hours * 3600 * 0.97 if not (startup and hours <= 6) else 3600
+            if elapsed < due:
+                if self._update_info and updater.is_newer(self._update_info["version"]):
+                    self._show_update_pill(self._update_info)
                 return
         self.s.set("update/last_check", time.time())
         th = TaskThread(lambda p, c, i: updater.check_latest(), self)
-        th.done.connect(lambda info: self._update_result(info, manual))
+        th.done.connect(lambda info: self._update_result(info, manual, startup))
         th.failed.connect(lambda e: manual and QMessageBox.information(
             self, "Nach Updates suchen", e.split(": ", 1)[-1]))
         self._bg.append(th)
         th.start()
 
-    def _update_result(self, info, manual):
+    def _update_result(self, info, manual, startup=False):
         if not updater.is_newer(info["version"]):
+            self.header.update_pill.hide()
             if manual:
                 QMessageBox.information(self, "Nach Updates suchen",
                                         f"Du hast die aktuelle Version ({__version__}).")
             return
-        if not manual and self.s.get("update/skip") == info["version"]:
+        self._update_info = info
+        if manual:
+            self._show_update_pill(info)
+            self._show_update_dialog()
             return
+        if self.s.get("update/skip") == info["version"]:
+            return
+        self._show_update_pill(info)
+        first = self.s.get("update/notified") != info["version"]
+        if first:
+            self.s.set("update/notified", info["version"])
+            self._notify_update(info)
+            if startup:
+                self._show_update_dialog()
+
+    def _show_update_pill(self, info):
+        p = self.header.update_pill
+        p.setText(f"⬆  Update {info['version']}")
+        p.setToolTip(f"MusicOrganizer {info['version']} ist verfügbar (installiert: {__version__}) – klicken "
+                     "zum Ansehen und Installieren")
+        p.show()
+        self.statusBar().showMessage(f"Neue Version {info['version']} verfügbar – oben auf „Update“ klicken.",
+                                     15000)
+
+    def _notify_update(self, info):
+        """Systembenachrichtigung (Windows: Infobereich, macOS: Mitteilungszentrale)."""
+        try:
+            from PySide6.QtWidgets import QSystemTrayIcon
+            if not QSystemTrayIcon.isSystemTrayAvailable():
+                return
+            if self._tray is None:
+                self._tray = QSystemTrayIcon(self.windowIcon(), self)
+                self._tray.setToolTip(APP_NAME)
+                self._tray.messageClicked.connect(lambda: self._show_update_dialog(raise_window=True))
+                self._tray.activated.connect(lambda *_: self._show_update_dialog(raise_window=True))
+            self._tray.show()
+            if QSystemTrayIcon.supportsMessages():
+                self._tray.showMessage("Update verfügbar",
+                                       f"MusicOrganizer {info['version']} ist erschienen (installiert: "
+                                       f"{__version__}). Klicken zum Installieren.",
+                                       self.windowIcon(), 15000)
+        except Exception:
+            pass
+
+    def _show_update_dialog(self, raise_window=False):
+        info = self._update_info
+        if not info:
+            return
+        if raise_window:
+            self.showNormal()
+            self.raise_()
+            self.activateWindow()
         dlg = UpdateDialog(info, self.s, self)
         dlg.exec()
+        if self._tray is not None:
+            self._tray.hide()
+        if self.s.get("update/skip") == info["version"]:
+            self.header.update_pill.hide()
         if dlg.install_started:
             self.close()
 
@@ -1591,6 +1866,11 @@ class MainWindow(QMainWindow):
             hh.setSectionResizeMode(QHeaderView.Interactive)
             hh.setSectionsMovable(True)
             hh.setFirstSectionMovable(True)
+        if not self.s.value("win/lufs_placed"):
+            # neue Spalte „Lautheit“ (1.1.0) einmalig neben „Format“ setzen statt ganz ans Ende
+            hh.moveSection(hh.visualIndex(COL_INDEX["lufs"]), hh.visualIndex(COL_INDEX["fmt"]) + 1)
+            self.table.setColumnHidden(COL_INDEX["lufs"], False)
+            self.s.set("win/lufs_placed", 1)
         try:
             col = int(self.s.value("win/sort_col_v3", COL_INDEX["artist"]))
             order = Qt.SortOrder(int(self.s.value("win/sort_order_v3", 0)))
